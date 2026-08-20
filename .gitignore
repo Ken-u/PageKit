@@ -1,0 +1,57 @@
+# 构建产物
+*.apk
+*.aab
+*.aar
+*.ap_
+*.dex
+*.class
+
+# 生成目录
+bin/
+gen/
+out/
+build/
+app/build/
+release/
+
+# Gradle
+.gradle/
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.navigation/
+
+# 原生构建
+.externalNativeBuild/
+.cxx/
+
+# ProGuard（Eclipse 生成）
+proguard/
+
+# 日志与性能分析
+*.log
+*.hprof
+
+# 签名文件（默认不提交，按需放开）
+*.jks
+*.keystore
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+
+# lint
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# 系统文件
+.DS_Store
+Thumbs.db
