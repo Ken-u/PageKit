@@ -17,6 +17,7 @@ release/
 # Gradle
 .gradle/
 local.properties
+.kotlin/
 
 # Android Studio / IntelliJ
 .idea/
