@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
                 val dx = intent.getIntExtra("dx", 0)
                 val dy = intent.getIntExtra("dy", 600)
                 Log.i("PageKit", "CONTROL intent: op=$op eid=$eid text=$text dx=$dx dy=$dy")
-                (applicationContext as PageKitApp).homeViewModel.controlOp(op, eid, text, dx, dy)
+                (applicationContext as PageKitApp).homeViewModel.controlOp(op, eid, text, intent.getStringExtra("intent"), dx, dy)
             }
 
             else -> Unit

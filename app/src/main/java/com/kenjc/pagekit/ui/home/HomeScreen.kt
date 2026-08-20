@@ -41,10 +41,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kenjc.pagekit.PageKitApp
+import com.kenjc.pagekit.compress.PromptBuilder
 import com.kenjc.pagekit.engine.LoadState
 
-/** 顶部视图 Tab，顺序与 PLAN.md 一致：网页 / Markdown / JSON */
-private val VIEW_TABS = listOf("网页", "Markdown", "JSON")
+/** 顶部视图 Tab，顺序与 PLAN.md 一致：网页 / Markdown / JSON / Prompt */
+private val VIEW_TABS = listOf("网页", "Markdown", "JSON", "Prompt")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -161,7 +162,9 @@ fun HomeScreen(
 
                     1 -> MarkdownTab(extractState)
 
-                    else -> JsonTab(extractState)
+                    2 -> JsonTab(extractState)
+
+                    else -> PromptTab(vm, extractState)
                 }
             }
         }
@@ -186,6 +189,56 @@ private fun JsonTab(state: ExtractUiState, modifier: Modifier = Modifier) {
         text = { it.json.ifBlank { "（结构化装配未完成）" } },
         modifier = modifier,
     )
+}
+
+/** M6：完整 Prompt（复制贴给任意 LLM 验证输出） */
+@Composable
+private fun PromptTab(vm: HomeViewModel, state: ExtractUiState, modifier: Modifier = Modifier) {
+    val intent by vm.focusIntent.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+    val prompt = if (state.ok) {
+        PromptBuilder.buildFullPrompt(
+            url = state.url,
+            title = state.title,
+            intent = intent,
+            markdown = state.markdown,
+        )
+    } else {
+        ""
+    }
+
+    fun copy() {
+        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("PageKit Prompt", prompt))
+    }
+
+    if (!state.ok) {
+        Placeholder("提取后可导出 SPECS.md 三段完整 Prompt（手动贴给任意 LLM 验证）")
+        return
+    }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = intent,
+                onValueChange = vm::setFocusIntent,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("用户意图（Focus 模式，可空）") },
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            TextButton(onClick = ::copy) { Text("复制完整 Prompt") }
+        }
+        Text(
+            prompt,
+            modifier = Modifier.padding(top = 8.dp),
+            fontFamily = FontFamily.Monospace,
+        )
+    }
 }
 
 @Composable

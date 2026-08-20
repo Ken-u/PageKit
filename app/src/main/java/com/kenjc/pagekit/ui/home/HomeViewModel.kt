@@ -9,6 +9,7 @@ import com.kenjc.pagekit.engine.HtmlToMarkdown
 import com.kenjc.pagekit.engine.LoadState
 import com.kenjc.pagekit.engine.StructuredAssembler
 import com.kenjc.pagekit.engine.WebPageLoader
+import com.kenjc.pagekit.compress.PromptBuilder
 import com.kenjc.pagekit.engine.adblock.AdBlocker
 import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     val elements = MutableStateFlow<List<String>>(emptyList())
     val annotateOn = MutableStateFlow(false)
 
+    /** M6 Focus 意图（PromptBuilder 用户意图槽） */
+    private val _focusIntent = MutableStateFlow("")
+    val focusIntent: StateFlow<String> = _focusIntent.asStateFlow()
+
+    fun setFocusIntent(v: String) {
+        _focusIntent.value = v
+    }
+
     fun snapshotElements() {
         viewModelScope.launch {
             elements.value = controller.snapshot(loader.webView)
@@ -79,7 +88,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * 控制操作（intent 驱动，MCP 浏览器控制前身）：
      * op ∈ snapshot|click|type|scroll|annotate|title，结果写 filesDir/control_result.txt
      */
-    fun controlOp(op: String, eid: String?, text: String?, dx: Int, dy: Int) {
+    fun controlOp(op: String, eid: String?, text: String?, focusIntent: String?, dx: Int, dy: Int) {
         viewModelScope.launch {
             val wv = loader.webView
             val result = when (op) {
@@ -89,9 +98,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 "scroll" -> controller.scroll(wv, dx, dy)
                 "annotate" -> controller.annotate(wv, !annotateOn.value).also { annotateOn.value = !annotateOn.value }
                 "title" -> controller.title(wv)
+                // M6：三段完整 Prompt（最近一次提取的 markdown + focusIntent 拼装，adb 导出验证）
+                "prompt" -> PromptBuilder.buildFullPrompt(
+                    url = loader.currentUrl(),
+                    title = wv.title ?: "",
+                    intent = focusIntent?.takeIf { it.isNotBlank() },
+                    markdown = _extractState.value.markdown.ifBlank { "(尚未提取)" },
+                )
                 else -> errOp("unknown op: $op")
             }
-            android.util.Log.i("PageKit", "controlOp($op): $result")
+            android.util.Log.i("PageKit", "controlOp($op): ${result.take(120)}")
             runCatching {
                 getApplication<Application>().filesDir.resolve("control_result.txt").writeText(result)
             }.onFailure { android.util.Log.e("PageKit", "control result save failed", it) }
