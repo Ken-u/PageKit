@@ -20,6 +20,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -156,7 +157,7 @@ fun HomeScreen(
 
                     1 -> MarkdownTab(extractState)
 
-                    else -> Placeholder("M4：结构化 JSON 骨架")
+                    else -> JsonTab(extractState)
                 }
             }
         }
@@ -165,18 +166,57 @@ fun HomeScreen(
 
 @Composable
 private fun MarkdownTab(state: ExtractUiState, modifier: Modifier = Modifier) {
+    ResultPane(
+        state = state,
+        emptyHint = "先在「网页」Tab 加载并点「提取」",
+        text = { it.markdown },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun JsonTab(state: ExtractUiState, modifier: Modifier = Modifier) {
+    ResultPane(
+        state = state,
+        emptyHint = "提取后展示 SPECS.md JSON 骨架（语义字段 V2 由 LLM 填充）",
+        text = { it.json.ifBlank { "（结构化装配未完成）" } },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun ResultPane(
+    state: ExtractUiState,
+    emptyHint: String,
+    text: (ExtractUiState) -> String,
+    modifier: Modifier = Modifier,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+
+    fun content() = text(state)
+
+    fun copy() {
+        clipboard?.setPrimaryClip(
+            android.content.ClipData.newPlainText("PageKit", content()),
+        )
+    }
+
+    fun share() {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_TEXT, content())
+            }.let { android.content.Intent.createChooser(it, "分享") },
+        )
+    }
+
     when {
         state.running -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
 
-        !state.ok -> Placeholder(
-            if (state.title.isBlank() && state.markdown.isBlank()) {
-                "先在「网页」Tab 加载并点「提取」"
-            } else {
-                "提取失败（${state.mode}）"
-            },
-        )
+        !state.ok -> Placeholder(emptyHint)
 
         else -> Column(
             modifier = modifier
@@ -184,12 +224,17 @@ private fun MarkdownTab(state: ExtractUiState, modifier: Modifier = Modifier) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "${state.title} · ${state.mode} · ${state.durationMs}ms",
+                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = ::copy) { Text("复制") }
+                TextButton(onClick = ::share) { Text("分享") }
+            }
             Text(
-                "${state.title} · ${state.mode} · ${state.durationMs}ms",
-                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-            )
-            Text(
-                state.markdown,
+                content(),
                 modifier = Modifier.padding(top = 8.dp),
                 fontFamily = FontFamily.Monospace,
             )

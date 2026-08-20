@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.kenjc.pagekit.engine.ContentExtractor
 import com.kenjc.pagekit.engine.HtmlToMarkdown
 import com.kenjc.pagekit.engine.LoadState
+import com.kenjc.pagekit.engine.StructuredAssembler
 import com.kenjc.pagekit.engine.WebPageLoader
 import com.kenjc.pagekit.engine.adblock.AdBlocker
 import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /** 提取结果 UI 状态 */
 data class ExtractUiState(
@@ -25,6 +28,7 @@ data class ExtractUiState(
     val byline: String = "",
     val url: String = "",
     val markdown: String = "",
+    val json: String = "",
     val durationMs: Long = 0,
 )
 
@@ -32,6 +36,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val adBlocker: AdBlocker = NoopAdBlocker
     private val extractor = ContentExtractor(app)
+    private val assembler = StructuredAssembler()
+    private val jsonFmt = Json { prettyPrint = true; encodeDefaults = false }
 
     /** 共享 WebView 加载器：ViewModel 初始化在主线程 */
     val loader = WebPageLoader(app, adBlocker)
@@ -75,7 +81,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 提取主内容 → 去噪 → Markdown（viewModelScope 默认主线程，满足 WebView 约束） */
     fun extract() {
-        android.util.Log.i("PageKit", "extract() called, running=${_extractState.value.running}")
+        android.util.Log.i(
+            "PageKit",
+            "extract() called, pid=${android.os.Process.myPid()} vm=${System.identityHashCode(this)} running=${_extractState.value.running}",
+        )
         if (_extractState.value.running) return
         _extractState.value = ExtractUiState(running = true)
         viewModelScope.launch {
@@ -102,6 +111,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 "extract done: ok=${newState.ok} mode=${newState.mode} mdLen=${newState.markdown.length} title=${newState.title}",
             )
             onExtracted?.invoke(newState)
+            // M4：结构化装配（独立步骤，失败不影响 Markdown 结果）
+            if (result.ok) {
+                val page = assembler.assemble(loader.webView)
+                val jsonStr = withContext(Dispatchers.Default) { jsonFmt.encodeToString(page) }
+                _extractState.value = newState.copy(json = jsonStr)
+                // 落盘：ResultTunnelReceiver（可能运行于独立进程）与 V2 导出读取
+                runCatching {
+                    val f = getApplication<Application>().filesDir.resolve("last_result.txt")
+                    f.writeText(newState.markdown + "\n===JSON===\n" + jsonStr)
+                    android.util.Log.i("PageKit", "result saved: ${f.path} (${f.length()} bytes)")
+                }.onFailure {
+                    android.util.Log.e("PageKit", "result save failed", it)
+                }
+            }
         }
     }
 
