@@ -31,10 +31,10 @@ object NoiseRules {
         "#nav", "#navbar", "#navigation", "#menu", "#sidebar", "#footer", "#header", "#banner",
     )
 
-    /** 生成注入 JS：在给定根元素上删除全部噪声节点 */
+    /** 生成注入 JS：在给定根元素上删除全部噪声节点（单引号，可直接嵌入三引号脚本） */
     fun toJs(rootRef: String): String = buildString {
         append("(function(){var n=")
-        append(SELECTORS.joinToString(prefix = "[", postfix = "]") { "\"$it\"" })
+        append(SELECTORS.joinToString(prefix = "[", postfix = "]") { "'$it'" })
         append(";n.forEach(function(s){try{")
         append(rootRef)
         append(".querySelectorAll(s).forEach(function(el){el.remove()})}catch(e){}});})()")

@@ -52,4 +52,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.flexmark.html2md)
+    testImplementation(libs.junit)
 }
