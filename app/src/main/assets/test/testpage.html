@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>PageKit 离线测试页</title>
+</head>
+<body>
+<nav class="navbar"><a href="#">首页</a> <a href="#">文档</a> <a href="#">下载</a></nav>
+<div class="ad">【广告】买一送一！</div>
+<header class="site-header"><h1>示例站点</h1></header>
+<main>
+    <article>
+        <h1>RTX5090 部署 DeepSeek V4 指南</h1>
+        <p>本指南演示如何在 RTX5090 上部署 DeepSeek V4，需要 CUDA13 与最新驱动。</p>
+        <h2>安装步骤</h2>
+        <pre><code>docker pull deepseek/v4:latest
+docker run --gpus all deepseek/v4:latest</code></pre>
+        <h2>硬件要求</h2>
+        <table>
+            <tr><th>型号</th><th>显存</th><th>FP4</th></tr>
+            <tr><td>RTX5090</td><td>32GB</td><td>支持</td></tr>
+            <tr><td>RTX4090</td><td>24GB</td><td>不支持</td></tr>
+        </table>
+        <h2>常用命令</h2>
+        <p><code>nvidia-smi</code> 查看 GPU 状态，更多见 <a href="https://example.com/docs">官方文档</a>。</p>
+        <blockquote>Warning：升级固件前请备份数据。</blockquote>
+    </article>
+</main>
+<div class="comments"><p>评论1：写得不错</p><p>评论2：学习了</p></div>
+<aside class="sidebar"><ul><li>相关阅读</li><li>推荐文章</li></ul></aside>
+<footer class="site-footer">© 2025 示例站点 · <a href="#">分享</a> · <a href="#">微博</a></footer>
+</body>
+</html>

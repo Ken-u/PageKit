@@ -17,10 +17,7 @@ import android.webkit.WebViewClient
 import com.kenjc.pagekit.engine.adblock.AdBlocker
 import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
-import org.json.JSONTokener
 import java.io.ByteArrayInputStream
-import kotlin.coroutines.resume
 
 /** 页面加载状态 */
 sealed interface LoadState {
@@ -46,7 +43,6 @@ class WebPageLoader(
         private const val QUIET_AFTER_COMPLETE_MS = 800L
         private const val LOAD_TIMEOUT_MS = 20_000L
         private const val READINESS_DEBOUNCE_MS = 200L
-        private const val EXTRACT_HTML_JS = "(function(){return document.documentElement.outerHTML})()"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -72,6 +68,7 @@ class WebPageLoader(
                 useWideViewPort = true
                 loadWithOverviewMode = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                allowFileAccess = true
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             webViewClient = LoaderClient()
@@ -120,18 +117,29 @@ class WebPageLoader(
         }
     }
 
-    /** progress==100 后静默判定：readyState complete + 静默期 → Ready */
+    /**
+     * 就绪判定（PLAN.md：readyState=="complete" + 静默期）。
+     * 不依赖 onProgressChanged（file:// 等场景 progress 不可靠）；
+     * onPageFinished 后轮询 readyState，complete 后静默 800ms → Ready。
+     */
     private fun scheduleReadinessCheck() {
         readinessRunnable?.let { mainHandler.removeCallbacks(it) }
         readinessRunnable = Runnable {
             readinessRunnable = null
-            if (lastProgress < 100) return@Runnable
             webView.evaluateJavascript("document.readyState") { result ->
-                if (result == "\"complete\"" && lastProgress >= 100) {
-                    mainHandler.postDelayed(
-                        { if (lastProgress >= 100) markReady() },
-                        QUIET_AFTER_COMPLETE_MS,
-                    )
+                when {
+                    result == "\"complete\"" ->
+                        mainHandler.postDelayed(
+                            { if (state.value is LoadState.Loading) markReady() },
+                            QUIET_AFTER_COMPLETE_MS,
+                        )
+
+                    state.value is LoadState.Loading ->
+                        // readyState 尚未 complete（仍在执行 JS），继续轮询
+                        mainHandler.postDelayed(
+                            { scheduleReadinessCheck() },
+                            READINESS_DEBOUNCE_MS,
+                        )
                 }
             }
         }.also { mainHandler.postDelayed(it, READINESS_DEBOUNCE_MS) }
@@ -168,31 +176,18 @@ class WebPageLoader(
 
     fun currentUrl(): String = webView.url ?: ""
 
-    /** 加载 URL（主线程调用；自动补全 https://） */
+    /** 加载 URL（主线程调用；自动补全 https://，放行 file:///about:） */
     fun loadUrl(rawUrl: String) {
-        val url = rawUrl.trim().let { if (it.startsWith("http", ignoreCase = true)) it else "https://$it" }
+        val t = rawUrl.trim()
+        val url = when {
+            t.startsWith("http", ignoreCase = true) ||
+                t.startsWith("file://") ||
+                t.startsWith("about:") ||
+                t.startsWith("data:") -> t
+
+            else -> "https://$t"
+        }
         webView.loadUrl(url)
-    }
-
-    /** 提取当前页面完整 HTML（M2 调试口径；M3 起由 ContentExtractor 接管） */
-    suspend fun extractRawHtml(): String = evaluateJs(EXTRACT_HTML_JS) ?: ""
-
-    /** evaluateJavascript 封装：解 JSON 转义，返回原始字符串（null 透传为 null） */
-    suspend fun evaluateJs(script: String): String? = suspendCancellableCoroutine { cont ->
-        mainHandler.post {
-            webView.evaluateJavascript(script) { result ->
-                if (cont.isActive) cont.resume(unquote(result))
-            }
-        }
-    }
-
-    private fun unquote(result: String?): String? = when (result) {
-        null, "null" -> null
-        else -> try {
-            JSONTokener(result).nextValue()?.toString()
-        } catch (_: Exception) {
-            result
-        }
     }
 
     private fun emptyResponse() = WebResourceResponse(
