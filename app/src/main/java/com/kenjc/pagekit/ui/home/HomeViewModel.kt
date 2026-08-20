@@ -3,6 +3,7 @@ package com.kenjc.pagekit.ui.home
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kenjc.pagekit.engine.BrowserController
 import com.kenjc.pagekit.engine.ContentExtractor
 import com.kenjc.pagekit.engine.HtmlToMarkdown
 import com.kenjc.pagekit.engine.LoadState
@@ -37,6 +38,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val adBlocker: AdBlocker = NoopAdBlocker
     private val extractor = ContentExtractor(app)
     private val assembler = StructuredAssembler()
+    private val controller = BrowserController()
     private val jsonFmt = Json { prettyPrint = true; encodeDefaults = false }
 
     /** 共享 WebView 加载器：ViewModel 初始化在主线程 */
@@ -47,6 +49,56 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _extractState = MutableStateFlow(ExtractUiState())
     val extractState: StateFlow<ExtractUiState> = _extractState.asStateFlow()
+
+    /** M5 浏览器控制 */
+    val elements = MutableStateFlow<List<String>>(emptyList())
+    val annotateOn = MutableStateFlow(false)
+
+    fun snapshotElements() {
+        viewModelScope.launch {
+            elements.value = controller.snapshot(loader.webView)
+            android.util.Log.i("PageKit", "snapshot: ${elements.value.size} elements")
+        }
+    }
+
+    fun toggleAnnotate() {
+        viewModelScope.launch {
+            annotateOn.value = !annotateOn.value
+            controller.annotate(loader.webView, annotateOn.value)
+        }
+    }
+
+    fun clickElement(eid: String) {
+        viewModelScope.launch {
+            val r = controller.click(loader.webView, eid)
+            android.util.Log.i("PageKit", "click($eid): $r")
+        }
+    }
+
+    /**
+     * 控制操作（intent 驱动，MCP 浏览器控制前身）：
+     * op ∈ snapshot|click|type|scroll|annotate|title，结果写 filesDir/control_result.txt
+     */
+    fun controlOp(op: String, eid: String?, text: String?, dx: Int, dy: Int) {
+        viewModelScope.launch {
+            val wv = loader.webView
+            val result = when (op) {
+                "snapshot" -> controller.snapshot(wv).joinToString("\n")
+                "click" -> eid?.let { controller.click(wv, it) } ?: errOp("missing eid")
+                "type" -> if (eid != null && text != null) controller.type(wv, eid, text) else errOp("missing eid/text")
+                "scroll" -> controller.scroll(wv, dx, dy)
+                "annotate" -> controller.annotate(wv, !annotateOn.value).also { annotateOn.value = !annotateOn.value }
+                "title" -> controller.title(wv)
+                else -> errOp("unknown op: $op")
+            }
+            android.util.Log.i("PageKit", "controlOp($op): $result")
+            runCatching {
+                getApplication<Application>().filesDir.resolve("control_result.txt").writeText(result)
+            }.onFailure { android.util.Log.e("PageKit", "control result save failed", it) }
+        }
+    }
+
+    private fun errOp(msg: String) = """{"ok":false,"error":"$msg"}"""
 
     init {
         // 就绪状态变化时检查自动提取（VM 侧驱动，不依赖 UI 收集）

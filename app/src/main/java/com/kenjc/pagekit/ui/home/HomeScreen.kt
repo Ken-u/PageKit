@@ -2,13 +2,16 @@ package com.kenjc.pagekit.ui.home
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -153,6 +156,7 @@ fun HomeScreen(
                         if (loadState is LoadState.Loading) {
                             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                         }
+                        ElementsPanel(vm)
                     }
 
                     1 -> MarkdownTab(extractState)
@@ -249,5 +253,57 @@ private fun Placeholder(hint: String, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         Text(hint, modifier = Modifier.padding(16.dp))
+    }
+}
+
+/** M5 元素标注面板：右下角可展开，快照列表 + 点击触发 + 标注开关 */
+@Composable
+private fun BoxScope.ElementsPanel(vm: HomeViewModel) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val elements by vm.elements.collectAsStateWithLifecycle()
+    val annotateOn by vm.annotateOn.collectAsStateWithLifecycle()
+
+    Column(
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(12.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        if (expanded) {
+            androidx.compose.material3.Surface(
+                tonalElevation = 3.dp,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .heightIn(max = 260.dp)
+                        .widthIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Row {
+                        TextButton(onClick = vm::snapshotElements) { Text("快照") }
+                        TextButton(onClick = vm::toggleAnnotate) {
+                            Text(if (annotateOn) "标注:开" else "标注:关")
+                        }
+                    }
+                    elements.forEach { line ->
+                        val eid = line.substringAfter('[').substringBefore(']').ifBlank { null }
+                        TextButton(
+                            onClick = { eid?.let(vm::clickElement) },
+                            enabled = eid != null,
+                        ) {
+                            Text(line, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (elements.isEmpty()) {
+                        Text("点「快照」枚举页面元素", style = androidx.compose.material3.MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        androidx.compose.material3.FloatingActionButton(
+            onClick = { expanded = !expanded },
+        ) { Text(if (expanded) "×" else "[e]") }
     }
 }
