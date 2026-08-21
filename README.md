@@ -18,6 +18,7 @@
 | LLM 压缩 | OpenAI-compatible / 端侧 endpoint，raw / compact / focus 三模式 |
 | 章节展开 | 私有缓存保存原始 Markdown，`page_id + section_id` 可无网络 `expand` |
 | MCP | 设备 localhost Streamable HTTP，Bearer token + Origin 校验 + 前台服务生命周期 |
+| Coding Agent adapter | 标准 `WebSearchProvider` + Kimi Code 原生 SearchWeb HTTP 协议；其他 Agent 走 MCP |
 | 广告过滤 | StevenBlack hosts 请求过滤 + EasyList/EasyList China DOM 清洗 + 在线更新 |
 
 ## 架构
@@ -44,6 +45,7 @@ engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager �
 ./build.sh install [serial] # 安装到实机
 ./build.sh verify [serial]  # 实机全链路验证（加载→提取→md/json/prompt）
 ./build.sh mcptest [serial] # MCP 鉴权、Origin、握手与工具发现
+./build.sh providertest [serial] # Kimi SearchWeb provider 鉴权与协议结构
 ./build.sh llmtest [serial] # compact/focus、确定性字段保真与 expand 闭环
 ./build.sh searchtest ["查询词"] ["https://www.bing.com"] [serial]  # 搜索结果页直航→提取（支持 baidu/bing/sogou/360/google）
 ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]   # 搜索→点进第一条真实结果→详情页提取
@@ -106,11 +108,24 @@ npx -y @modelcontextprotocol/inspector --web \
 当前工具：`webfetch`、`websearch`、`expand`、`browser_snapshot`、`browser_click`、
 `browser_type`、`browser_scroll`、`llm_status`、`llm_configure`。
 
-`webfetch` / `websearch` 支持 `mode=raw|compact|focus`。raw 始终离线；compact/focus
+`webfetch` 支持 `mode=raw|compact|focus`。raw 始终离线；compact/focus
 使用在 Prompt 页或 `llm_configure` 中保存的 OpenAI-compatible endpoint/model/key。
 Focus 必须提供 `intent`。LLM 的输出只采用 summary/key_points/sections 等语义字段，
 代码、命令、表格、下载和链接会由本地确定性结果覆盖，避免模型改写原文。压缩结果携带
 `page_id`，`remaining_information` 列出可传给 `expand` 的 `section_id`。
+
+MCP `websearch` 复用标准 `WebSearchProvider`，参数为 `query / engine / limit /
+include_content`，直接返回结构化 `results[]`；`include_content=true` 时会抓取每条结果正文。
+
+## Coding Agent WebSearch adapter
+
+除 MCP 外，同一服务还提供 Kimi Code 原生 `SearchWeb` endpoint：
+`http://127.0.0.1:3000/v1/search`。它接受 Kimi 的 `text_query / limit /
+enable_page_crawling / timeout_seconds` 请求，并返回严格的 `search_results[]` 契约。
+主机经 `adb forward` 后使用 `http://127.0.0.1:19300/v1/search`，Bearer token 与 MCP 相同。
+
+Kimi 原生配置、Kimi MCP 命令、通用 MCP JSON，以及新增其他厂商 adapter 的方式见
+[Coding Agent WebSearch 接入](docs/coding-agent-websearch.md)。
 
 广告规则以 APK 内的固定快照作为永久兜底。WorkManager 在联网条件下每 7 天检查
 StevenBlack hosts、EasyList 和 EasyList China，使用 ETag/Last-Modified 条件请求；

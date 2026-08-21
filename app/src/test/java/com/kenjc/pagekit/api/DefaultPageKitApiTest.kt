@@ -3,6 +3,7 @@ package com.kenjc.pagekit.api
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import java.util.concurrent.atomic.AtomicInteger
@@ -47,15 +48,31 @@ class DefaultPageKitApiTest {
         assertTrue(result.url.contains("PageKit"))
     }
 
+    @Test
+    fun `provider search 返回结构化结果并限制数量`() = runBlocking {
+        val runtime = FakeRuntime()
+        val results = DefaultPageKitApi(runtime).searchResults("PageKit", "bing", 3)
+
+        assertEquals(1, results.size)
+        assertEquals("Example", results.single().title)
+        assertEquals(3, runtime.lastSearchLimit)
+    }
+
     private class FakeRuntime : PageKitRuntime {
         val calls = AtomicInteger()
         val maxConcurrent = AtomicInteger()
         private val concurrent = AtomicInteger()
         @Volatile var lastRequest: FetchRequest? = null
+        @Volatile var lastSearchLimit: Int? = null
 
         override suspend fun fetch(request: FetchRequest): RuntimePageResult = guarded {
             lastRequest = request
             RuntimePageResult(CompressedPage(url = request.url), "", "", "test", 1)
+        }
+
+        override suspend fun search(url: String, engine: String, limit: Int): List<SearchHit> = guarded {
+            lastSearchLimit = limit
+            listOf(SearchHit(siteName = "example.com", title = "Example", url = "https://example.com"))
         }
 
         override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult = fetch(request)

@@ -4,6 +4,7 @@ import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.engine.SearchEngine
+import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import kotlinx.coroutines.sync.Mutex
@@ -54,6 +55,23 @@ class DefaultPageKitApi(
             "unknown search engine: $engine"
         }
         return fetchDetailed(FetchRequest(url = url, intent = intent, mode = mode))
+    }
+
+    /** Provider 专用的结构化搜索结果；不经过正文页压缩，避免把结果页当成单篇文章。 */
+    suspend fun searchResults(
+        query: String,
+        engine: String = SearchEngine.DEFAULT,
+        limit: Int = 5,
+    ): List<SearchHit> {
+        require(query.isNotBlank()) { "query must not be blank" }
+        require(limit in 1..20) { "limit must be between 1 and 20" }
+        val resolved = requireNotNull(SearchEngine.resolve(engine)) {
+            "unknown search engine: $engine"
+        }
+        val url = requireNotNull(SearchEngine.buildResultUrl(resolved, query)) {
+            "unknown search engine: $engine"
+        }
+        return sessionMutex.withLock { runtime.search(url, resolved, limit) }
     }
 
     override suspend fun click(elementId: String): Boolean =

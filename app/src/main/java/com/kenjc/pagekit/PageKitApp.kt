@@ -11,6 +11,8 @@ import com.kenjc.pagekit.mcp.PageKitMcpServerController
 import com.kenjc.pagekit.mcp.PageKitMcpTools
 import com.kenjc.pagekit.mcp.McpAccessPolicy
 import com.kenjc.pagekit.mcp.McpTokenStore
+import com.kenjc.pagekit.provider.KimiWebSearchAdapter
+import com.kenjc.pagekit.provider.PageKitWebSearchProvider
 import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.OpenAiCompatibleCompressor
 import com.kenjc.pagekit.compress.SharedPreferencesLlmSettings
@@ -74,8 +76,10 @@ class PageKitApp : Application() {
         pageKitApi = DefaultPageKitApi(runtime)
         homeViewModel = HomeViewModel(this, runtime, pageKitApi, llmSettings)
         mcpTokenStore = McpTokenStore(this).also { it.token }
+        val webSearchProvider = PageKitWebSearchProvider(pageKitApi)
         mcpServer = PageKitMcpServerController(
-            tools = PageKitMcpTools(pageKitApi, llmSettings),
+            tools = PageKitMcpTools(pageKitApi, llmSettings, webSearchProvider),
+            kimiWebSearchAdapter = KimiWebSearchAdapter(webSearchProvider),
             accessPolicy = McpAccessPolicy(mcpTokenStore.token),
         )
     }

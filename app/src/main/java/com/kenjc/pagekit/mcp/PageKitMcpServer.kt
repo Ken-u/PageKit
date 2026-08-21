@@ -4,7 +4,12 @@ import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.compress.LlmConfig
 import com.kenjc.pagekit.compress.LlmSettings
+import com.kenjc.pagekit.provider.KimiWebSearchAdapter
+import com.kenjc.pagekit.provider.PageKitWebSearchProvider
+import com.kenjc.pagekit.provider.WebSearchProvider
+import com.kenjc.pagekit.provider.WebSearchRequest
 import android.util.Log
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.cio.CIO
@@ -13,7 +18,10 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.header
 import io.ktor.server.request.path
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
@@ -46,11 +54,12 @@ import kotlinx.serialization.json.putJsonObject
 class PageKitMcpTools(
     private val api: DefaultPageKitApi,
     private val llmSettings: LlmSettings,
+    private val webSearchProvider: WebSearchProvider = PageKitWebSearchProvider(api),
 ) {
     private val json = Json { encodeDefaults = false }
 
     fun createServer(): Server = Server(
-        serverInfo = Implementation(name = "pagekit", version = "0.2.0"),
+        serverInfo = Implementation(name = "pagekit", version = "0.3.0"),
         options = ServerOptions(
             capabilities = ServerCapabilities(
                 tools = ServerCapabilities.Tools(listChanged = false),
@@ -93,30 +102,29 @@ class PageKitMcpTools(
 
         addTool(
             name = "websearch",
-            description = "Open a search result page in WebView and extract it in raw, compact, or focus mode.",
+            description = "Search the web and return structured results; optionally render each result and include its Markdown content.",
             inputSchema = schema(
                 "query" to stringProperty("Search query"),
                 "engine" to stringProperty("Search engine", enum = listOf("bing", "baidu", "sogou", "360", "google")),
-                "intent" to stringProperty("Optional extraction intent"),
-                "mode" to stringProperty("Extraction mode", enum = listOf("raw", "compact", "focus")),
+                "limit" to integerProperty("Number of results (1-20)", default = 5),
+                "include_content" to booleanProperty("Render result pages and include Markdown content", default = false),
                 required = listOf("query"),
             ),
         ) { request ->
             toolResult {
-                val mode = request.arguments.string("mode") ?: "raw"
-                validateMode(mode, request.arguments.string("intent"))
-                val result = api.webSearchDetailed(
-                    query = request.arguments.requiredString("query"),
-                    engine = request.arguments.string("engine") ?: "bing",
-                    intent = request.arguments.string("intent"),
-                    mode = mode,
+                val startedAt = System.currentTimeMillis()
+                val result = webSearchProvider.search(
+                    WebSearchRequest(
+                        query = request.arguments.requiredString("query"),
+                        engine = request.arguments.string("engine") ?: "bing",
+                        limit = request.arguments.int("limit") ?: 5,
+                        includeContent = request.arguments.boolean("include_content") ?: false,
+                    ),
                 )
                 buildJsonObject {
-                    put("page", json.encodeToJsonElement(result.page))
-                    put("markdown", result.markdown)
-                    put("extraction_mode", result.extractionMode)
-                    put("compression_mode", mode)
-                    put("duration_ms", result.durationMs)
+                    put("query", result.query)
+                    put("results", json.encodeToJsonElement(result.results))
+                    put("duration_ms", System.currentTimeMillis() - startedAt)
                 }
             }
         }
@@ -325,6 +333,7 @@ class PageKitMcpTools(
 /** 仅绑定设备回环地址的 Streamable HTTP server，由前台 Service 持有生命周期。 */
 class PageKitMcpServerController(
     private val tools: PageKitMcpTools,
+    private val kimiWebSearchAdapter: KimiWebSearchAdapter,
     private val accessPolicy: McpAccessPolicy,
     private val host: String = "127.0.0.1",
     private val port: Int = 3000,
@@ -343,7 +352,7 @@ class PageKitMcpServerController(
                     val mcpServer = tools.createServer()
                     newEngine = embeddedServer(CIO, host = host, port = port) {
                         intercept(ApplicationCallPipeline.Plugins) {
-                            if (context.request.path() != "/mcp") return@intercept
+                            if (context.request.path() !in PROTECTED_PATHS) return@intercept
                             when (
                                 accessPolicy.evaluate(
                                     authorization = context.request.header("Authorization"),
@@ -363,6 +372,27 @@ class PageKitMcpServerController(
                             }
                         }
                         mcpStreamableHttp(path = "/mcp") { mcpServer }
+                        routing {
+                            post("/v1/search") {
+                                try {
+                                    call.respondText(
+                                        text = kimiWebSearchAdapter.handle(call.receiveText()),
+                                        contentType = ContentType.Application.Json,
+                                    )
+                                } catch (error: IllegalArgumentException) {
+                                    call.respondText(
+                                        text = error.message ?: "Invalid request",
+                                        status = HttpStatusCode.BadRequest,
+                                    )
+                                } catch (error: Throwable) {
+                                    Log.e(TAG, "WebSearch provider failed", error)
+                                    call.respondText(
+                                        text = error.message ?: "Search failed",
+                                        status = HttpStatusCode.InternalServerError,
+                                    )
+                                }
+                            }
+                        }
                     }
                     newEngine.start(wait = false)
                     val keepRunning = synchronized(lifecycleLock) {
@@ -375,7 +405,7 @@ class PageKitMcpServerController(
                         }
                     }
                     if (!keepRunning) newEngine.stop(500, 2_000)
-                    else Log.i(TAG, "MCP listening on http://$host:$port/mcp")
+                    else Log.i(TAG, "MCP + WebSearch listening on http://$host:$port")
                 } catch (error: Throwable) {
                     synchronized(lifecycleLock) {
                         if (startingJob === ownJob) startingJob = null
@@ -398,5 +428,6 @@ class PageKitMcpServerController(
 
     private companion object {
         const val TAG = "PageKit.MCP"
+        val PROTECTED_PATHS = setOf("/mcp", "/v1/search")
     }
 }

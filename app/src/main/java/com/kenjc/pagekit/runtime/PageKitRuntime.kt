@@ -13,6 +13,8 @@ import com.kenjc.pagekit.engine.BrowserController
 import com.kenjc.pagekit.engine.ContentExtractor
 import com.kenjc.pagekit.engine.HtmlToMarkdown
 import com.kenjc.pagekit.engine.LoadState
+import com.kenjc.pagekit.engine.SearchHit
+import com.kenjc.pagekit.engine.SearchResultExtractor
 import com.kenjc.pagekit.engine.StructuredAssembler
 import com.kenjc.pagekit.engine.WebPageLoader
 import com.kenjc.pagekit.engine.adblock.AdBlocker
@@ -37,6 +39,7 @@ data class RuntimePageResult(
  */
 interface PageKitRuntime {
     suspend fun fetch(request: FetchRequest): RuntimePageResult
+    suspend fun search(url: String, engine: String, limit: Int): List<SearchHit>
     suspend fun extractCurrent(request: FetchRequest): RuntimePageResult
     suspend fun expand(pageId: String?, section: String): ExpandedSection
     suspend fun listInteractiveElements(): List<String>
@@ -61,11 +64,17 @@ class AndroidPageKitRuntime(
 
     private val extractor = ContentExtractor(context)
     private val assembler = StructuredAssembler()
+    private val searchResultExtractor = SearchResultExtractor()
     private val controller = BrowserController()
 
     override suspend fun fetch(request: FetchRequest): RuntimePageResult {
         loadAndAwait(request.url)
         return extractCurrent(request)
+    }
+
+    override suspend fun search(url: String, engine: String, limit: Int): List<SearchHit> {
+        loadAndAwait(url)
+        return searchResultExtractor.extract(loader.webView, engine, limit)
     }
 
     override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult {

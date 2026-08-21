@@ -6,12 +6,16 @@ import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.compress.LlmConfig
 import com.kenjc.pagekit.compress.LlmSettings
+import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.testing.ChannelTransport
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -51,6 +55,22 @@ class PageKitMcpServerTest {
         assertEquals("https://example.com", runtime.lastRequest?.url)
         assertTrue(fetch.content.isNotEmpty())
 
+        val search = client.callTool(
+            name = "websearch",
+            arguments = mapOf("query" to "PageKit", "limit" to 1, "include_content" to false),
+        )
+        assertFalse(search.isError == true)
+        assertEquals(
+            "Example",
+            search.structuredContent?.get("results")
+                ?.jsonArray
+                ?.single()
+                ?.jsonObject
+                ?.get("title")
+                ?.jsonPrimitive
+                ?.content,
+        )
+
         val expanded = client.callTool("expand", mapOf("section" to "s1", "page_id" to "page-1"))
         assertFalse(expanded.isError == true)
         assertEquals("s1", expanded.structuredContent?.get("section_id")?.toString()?.trim('"'))
@@ -86,6 +106,9 @@ class PageKitMcpServerTest {
                 durationMs = 1,
             )
         }
+
+        override suspend fun search(url: String, engine: String, limit: Int): List<SearchHit> =
+            listOf(SearchHit(siteName = "example.com", title = "Example", url = "https://example.com"))
 
         override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult = fetch(request)
         override suspend fun expand(pageId: String?, section: String): ExpandedSection =

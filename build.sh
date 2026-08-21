@@ -9,6 +9,7 @@
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
+#   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
 #   ./build.sh llmtest [serial]   # 实机 compact/focus + expand 闭环（本地假 OpenAI 端点）
 #   ./build.sh clean
 #
@@ -188,6 +189,51 @@ mcptest)
     $A shell dumpsys activity services "$PKG/.mcp.McpServerService" | grep -q McpServerService \
         || fail "MCP 前台服务未运行"
     echo "== MCP auth + Origin + initialize + tools/list + service lifecycle ✓ =="
+    ;;
+providertest)
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+    HOST_PORT="${PAGEKIT_MCP_PORT:-19300}"
+    SEARCH_URL="http://127.0.0.1:${HOST_PORT}/v1/search"
+
+    echo "== 设备: $DEV_ADDR | WebSearchProvider: $SEARCH_URL =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    $A shell am start -W -n "$PKG/.MainActivity" >/dev/null
+    sleep 3
+    $A forward --remove "tcp:${HOST_PORT}" >/dev/null 2>&1 || true
+    $A forward "tcp:${HOST_PORT}" tcp:3000 >/dev/null
+    TOKEN=$($A shell "run-as $PKG cat files/mcp_token.txt" | tr -d '\r\n')
+    [ "${#TOKEN}" -ge 32 ] || fail "未能读取应用私有 token"
+
+    UNAUTHORIZED=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H 'Content-Type: application/json' \
+        --data '{"text_query":"PageKit","limit":1}' "$SEARCH_URL")
+    [ "$UNAUTHORIZED" = 401 ] || fail "无 token 请求应返回 401，实际 $UNAUTHORIZED"
+
+    FORBIDDEN=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H "Authorization: Bearer $TOKEN" -H 'Origin: https://attacker.example' \
+        -H 'Content-Type: application/json' --data '{"text_query":"PageKit","limit":1}' \
+        "$SEARCH_URL")
+    [ "$FORBIDDEN" = 403 ] || fail "非回环 Origin 应返回 403，实际 $FORBIDDEN"
+
+    RESPONSE=$(curl --noproxy '*' --max-time 60 -sS -X POST \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        --data '{"text_query":"PageKit Android","limit":3,"enable_page_crawling":false,"timeout_seconds":30}' \
+        "$SEARCH_URL")
+    printf '%s' "$RESPONSE" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+results = data["search_results"]
+assert results, "search_results is empty"
+required = {"site_name", "title", "url", "snippet", "content", "date", "icon", "mime"}
+assert required <= set(results[0]), f"missing fields: {required - set(results[0])}"
+assert results[0]["url"].startswith(("http://", "https://"))
+print("first result:", results[0]["title"], results[0]["url"])
+'
+    echo "== Bearer auth + Origin + Kimi SearchWeb request/response contract ✓ =="
     ;;
 llmtest)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
@@ -399,6 +445,6 @@ clean)
     "$GRADLE_CMD" clean --no-daemon
     ;;
 *)
-    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|llmtest|clean）"
+    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|providertest|llmtest|searchtest|opentest|clean）"
     ;;
 esac
