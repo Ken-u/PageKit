@@ -5,6 +5,8 @@ import android.webkit.WebView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import kotlin.coroutines.resume
 
@@ -38,10 +40,11 @@ class ContentExtractor(private val context: Context) {
         readabilityInjectedForUrl = url
     }
 
-    suspend fun extract(webView: WebView): Result {
+    suspend fun extract(webView: WebView, elementHidingRules: List<String> = emptyList()): Result {
         val url = webView.url ?: return Result(false, "none", "", "", "")
         ensureReadability(webView, url)
-        val raw = evalJs(webView, EXTRACT_SCRIPT) ?: return Result(false, "none", "", "", "")
+        val selectors = (NoiseRules.SELECTORS + elementHidingRules).distinct()
+        val raw = evalJs(webView, extractScript(selectors)) ?: return Result(false, "none", "", "", "")
         return withContext(Dispatchers.Default) {
             runCatching {
                 val json = JSONObject(raw)
@@ -71,13 +74,20 @@ class ContentExtractor(private val context: Context) {
 
     private companion object {
         // 注意：三引号字符串内不能用 \" 转义，JS 字符串一律用单引号
-        private val EXTRACT_SCRIPT = """
+        private fun extractScript(selectors: List<String>): String {
+            val selectorsJson = Json.encodeToString(selectors)
+            return """
 (function(){
-  var NOISE = ${NoiseRules.SELECTORS.joinToString(prefix = "[", postfix = "]") { "'$it'" }};
+  var NOISE = $selectorsJson;
   var docClone = document.cloneNode(true);
-  NOISE.forEach(function(s){ try {
-    docClone.querySelectorAll(s).forEach(function(el){ el.remove(); });
-  } catch(e){} });
+  for (var start = 0; start < NOISE.length; start += 100) {
+    var chunk = NOISE.slice(start, start + 100);
+    try {
+      docClone.querySelectorAll(chunk.join(',')).forEach(function(el){ el.remove(); });
+    } catch(e) {
+      chunk.forEach(function(s){ try { docClone.querySelectorAll(s).forEach(function(el){ el.remove(); }); } catch(ignore){} });
+    }
+  }
   var result = null, mode = "readability";
   try {
     if (typeof Readability !== "undefined") {
@@ -106,6 +116,7 @@ class ContentExtractor(private val context: Context) {
     html: result.content || ""
   });
 })()
-        """.trimIndent()
+            """.trimIndent()
+        }
     }
 }

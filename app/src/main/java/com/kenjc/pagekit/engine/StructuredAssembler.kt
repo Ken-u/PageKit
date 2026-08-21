@@ -6,6 +6,8 @@ import com.kenjc.pagekit.api.dto.CompressedPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import kotlin.coroutines.resume
 
@@ -18,9 +20,10 @@ import kotlin.coroutines.resume
  */
 class StructuredAssembler {
 
-    suspend fun assemble(webView: WebView): CompressedPage {
+    suspend fun assemble(webView: WebView, elementHidingRules: List<String> = emptyList()): CompressedPage {
         // evaluateJavascript 必须主线程；JSON 解析留在当前上下文
-        val raw = withContext(Dispatchers.Main.immediate) { evalJs(webView, SNAPSHOT_SCRIPT) } ?: "{}"
+        val selectors = (NoiseRules.SELECTORS + elementHidingRules).distinct()
+        val raw = withContext(Dispatchers.Main.immediate) { evalJs(webView, snapshotScript(selectors)) } ?: "{}"
         return parse(raw, webView.url ?: "")
     }
 
@@ -75,11 +78,20 @@ class StructuredAssembler {
          * - links 限正文（去导航/页脚/社交），最多 30 条
          * - commands：从 <code>/<pre> 与行内文本中匹配已知命令前缀，去重保序，最多 20 条
          */
-        private val SNAPSHOT_SCRIPT = """
+        private fun snapshotScript(selectors: List<String>): String {
+            val selectorsJson = Json.encodeToString(selectors)
+            return """
 (function(){
-  var NOISE = ${NoiseRules.SELECTORS.joinToString(prefix = "[", postfix = "]") { "'$it'" }};
+  var NOISE = $selectorsJson;
   var clone = document.cloneNode(true);
-  NOISE.forEach(function(s){ try { clone.querySelectorAll(s).forEach(function(el){ el.remove(); }); } catch(e){} });
+  for (var start = 0; start < NOISE.length; start += 100) {
+    var chunk = NOISE.slice(start, start + 100);
+    try {
+      clone.querySelectorAll(chunk.join(',')).forEach(function(el){ el.remove(); });
+    } catch(e) {
+      chunk.forEach(function(s){ try { clone.querySelectorAll(s).forEach(function(el){ el.remove(); }); } catch(ignore){} });
+    }
+  }
 
   function txt(el){ return (el.textContent||'').replace(/\s+/g,' ').trim(); }
 
@@ -164,7 +176,8 @@ class StructuredAssembler {
     interactive: []
   });
 })()
-        """.trimIndent()
+            """.trimIndent()
+        }
     }
 }
 

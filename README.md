@@ -90,3 +90,4 @@ adb shell am start -n com.kenjc.pagekit/.MainActivity \
 
 - Readability.js：Apache-2.0（`app/src/main/assets/readability/`）
 - StevenBlack hosts：MIT（固定规则快照见 `app/src/main/assets/adblock/`）
+- EasyList / EasyList China：CC BY-SA 3.0（固定规则快照及署名见 `app/src/main/assets/adblock/`）

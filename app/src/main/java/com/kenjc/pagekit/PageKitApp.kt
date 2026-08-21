@@ -3,6 +3,8 @@ package com.kenjc.pagekit
 import android.app.Application
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.engine.adblock.AssetHostsRuleRepository
+import com.kenjc.pagekit.engine.adblock.AssetCosmeticRuleRepository
+import com.kenjc.pagekit.engine.adblock.CompositeAdBlocker
 import com.kenjc.pagekit.engine.adblock.HostsAdBlocker
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
 import com.kenjc.pagekit.ui.home.HomeViewModel
@@ -19,7 +21,10 @@ class PageKitApp : Application() {
     lateinit var hostsRuleRepository: AssetHostsRuleRepository
         private set
 
-    lateinit var adBlocker: HostsAdBlocker
+    lateinit var cosmeticRuleRepository: AssetCosmeticRuleRepository
+        private set
+
+    lateinit var hostsAdBlocker: HostsAdBlocker
         private set
 
     lateinit var runtime: AndroidPageKitRuntime
@@ -34,10 +39,12 @@ class PageKitApp : Application() {
     override fun onCreate() {
         super.onCreate()
         hostsRuleRepository = AssetHostsRuleRepository(this).also { it.start(applicationScope) }
-        adBlocker = HostsAdBlocker(
+        cosmeticRuleRepository = AssetCosmeticRuleRepository(this).also { it.start(applicationScope) }
+        hostsAdBlocker = HostsAdBlocker(
             repository = hostsRuleRepository,
             initialAllowlist = setOf("localhost", "127.0.0.1"),
         )
+        val adBlocker = CompositeAdBlocker(hostsAdBlocker, cosmeticRuleRepository)
         runtime = AndroidPageKitRuntime(this, adBlocker)
         pageKitApi = DefaultPageKitApi(runtime)
         homeViewModel = HomeViewModel(this, runtime, pageKitApi)

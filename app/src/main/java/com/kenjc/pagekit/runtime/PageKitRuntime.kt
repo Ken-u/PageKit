@@ -48,7 +48,7 @@ interface PageKitRuntime {
 /** WebView 驱动的 Android 运行时。 */
 class AndroidPageKitRuntime(
     context: Context,
-    adBlocker: AdBlocker = NoopAdBlocker,
+    private val adBlocker: AdBlocker = NoopAdBlocker,
     private val compressor: Compressor = NoopCompressor(),
 ) : PageKitRuntime {
 
@@ -65,15 +65,16 @@ class AndroidPageKitRuntime(
 
     override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult {
         val startedAt = System.currentTimeMillis()
+        val elementHidingRules = adBlocker.elementHidingRules(loader.currentUrl())
         val extracted = withContext(Dispatchers.Main.immediate) {
-            extractor.extract(loader.webView)
+            extractor.extract(loader.webView, elementHidingRules)
         }
         check(extracted.ok) { "页面主内容提取失败" }
 
         val markdown = withContext(Dispatchers.Default) {
             HtmlToMarkdown.convert(extracted.contentHtml)
         }
-        val structured = assembler.assemble(loader.webView)
+        val structured = assembler.assemble(loader.webView, elementHidingRules)
         val page = withContext(Dispatchers.Default) {
             compressor.compress(
                 request,

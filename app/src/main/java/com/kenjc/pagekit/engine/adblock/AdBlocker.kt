@@ -14,8 +14,8 @@ interface AdBlocker {
     /** 请求级拦截：true 表示以空响应拦截该请求 */
     fun shouldBlock(request: WebResourceRequest): Boolean
 
-    /** DOM 级元素隐藏选择器（V2 载入 EasyList 元素隐藏子集） */
-    fun elementHidingRules(): List<String> = emptyList()
+    /** DOM 级元素隐藏选择器；参数用于解析 EasyList 的域名限定与例外规则。 */
+    fun elementHidingRules(pageUrl: String): List<String> = emptyList()
 }
 
 /** V1 默认实现：全放行（去噪由 NoiseFilter 内置广告选择器承担） */
