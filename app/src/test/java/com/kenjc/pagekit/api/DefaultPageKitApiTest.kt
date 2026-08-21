@@ -2,6 +2,7 @@ package com.kenjc.pagekit.api
 
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import java.util.concurrent.atomic.AtomicInteger
@@ -58,6 +59,9 @@ class DefaultPageKitApiTest {
         }
 
         override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult = fetch(request)
+        override suspend fun expand(pageId: String?, section: String): ExpandedSection = guarded {
+            ExpandedSection(pageId ?: "latest", section, "Heading", "# Heading")
+        }
         override suspend fun listInteractiveElements(): List<String> = guarded { emptyList() }
         override suspend fun click(elementId: String): String = guarded { ok() }
         override suspend fun type(elementId: String, text: String): String = guarded { ok() }

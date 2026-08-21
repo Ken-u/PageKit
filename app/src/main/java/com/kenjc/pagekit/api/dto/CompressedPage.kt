@@ -5,11 +5,12 @@ import kotlinx.serialization.Serializable
 
 /**
  * SPECS.md「输出 JSON Schema」的 Kotlin 映射。
- * 语义字段（summary/key_points/sections/remaining_information 等）V1 由规则填充或为 null，V2 LLM 补齐。
- * 本 DTO 序列化结果即未来 MCP webfetch 工具的 payload。
+ * raw 模式语义字段可为 null；compact/focus 由 LLM 填充，本地确定性字段始终覆盖模型结果。
+ * 本 DTO 序列化结果即 MCP webfetch 工具的 page payload。
  */
 @Serializable
 data class CompressedPage(
+    val page_id: String? = null,
     val title: String = "",
     val url: String = "",
     val summary: String? = null,
@@ -62,4 +63,12 @@ data class FetchRequest(
     val url: String,
     val intent: String? = null,
     val mode: String = "raw", // raw | compact | focus
+)
+
+@Serializable
+data class ExpandedSection(
+    val page_id: String,
+    val section_id: String,
+    val heading: String,
+    val markdown: String,
 )

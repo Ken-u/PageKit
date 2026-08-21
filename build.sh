@@ -9,6 +9,7 @@
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
+#   ./build.sh llmtest [serial]   # 实机 compact/focus + expand 闭环（本地假 OpenAI 端点）
 #   ./build.sh clean
 #
 # 环境说明（全部用户目录，无需 root/sudo）：
@@ -188,6 +189,100 @@ mcptest)
         || fail "MCP 前台服务未运行"
     echo "== MCP auth + Origin + initialize + tools/list + service lifecycle ✓ =="
     ;;
+llmtest)
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+    HOST_PORT="${PAGEKIT_MCP_PORT:-19300}"
+    FAKE_PORT="${PAGEKIT_FAKE_LLM_PORT:-18080}"
+    MCP_URL="http://127.0.0.1:${HOST_PORT}/mcp"
+    LLM_CONFIG_EXISTED=-1
+
+    python3 scripts/fake_openai_server.py "$FAKE_PORT" &
+    FAKE_PID=$!
+    cleanup_llmtest() {
+        kill "$FAKE_PID" >/dev/null 2>&1 || true
+        wait "$FAKE_PID" >/dev/null 2>&1 || true
+        $A shell am force-stop "$PKG" >/dev/null 2>&1 || true
+        case "$LLM_CONFIG_EXISTED" in
+            1) $A shell "run-as $PKG cp cache/llmtest-pagekit-llm.xml shared_prefs/pagekit_llm.xml" >/dev/null 2>&1 || true ;;
+            0) $A shell "run-as $PKG rm -f shared_prefs/pagekit_llm.xml" >/dev/null 2>&1 || true ;;
+        esac
+        if [ "$LLM_CONFIG_EXISTED" != -1 ]; then
+            $A shell "run-as $PKG rm -f cache/llmtest-pagekit-llm.xml" >/dev/null 2>&1 || true
+        fi
+    }
+    trap cleanup_llmtest EXIT
+    sleep 1
+
+    echo "== 设备: $DEV_ADDR | compact/focus/expand =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    if $A shell "run-as $PKG test -f shared_prefs/pagekit_llm.xml"; then
+        $A shell "run-as $PKG cp shared_prefs/pagekit_llm.xml cache/llmtest-pagekit-llm.xml"
+        LLM_CONFIG_EXISTED=1
+    else
+        LLM_CONFIG_EXISTED=0
+    fi
+    $A shell am start -W -n "$PKG/.MainActivity" >/dev/null
+    sleep 3
+    $A forward --remove "tcp:${HOST_PORT}" >/dev/null 2>&1 || true
+    $A forward "tcp:${HOST_PORT}" tcp:3000 >/dev/null
+    $A reverse --remove "tcp:${FAKE_PORT}" >/dev/null 2>&1 || true
+    $A reverse "tcp:${FAKE_PORT}" "tcp:${FAKE_PORT}" >/dev/null
+    TOKEN=$($A shell "run-as $PKG cat files/mcp_token.txt" | tr -d '\r\n')
+
+    INIT=$(curl --noproxy '*' -sS -i -X POST \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pagekit-llm-smoke","version":"1"}}}' \
+        "$MCP_URL" | tr -d '\r')
+    SESSION=$(printf '%s\n' "$INIT" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2; exit}')
+    [ -n "$SESSION" ] || fail "LLM smoke initialize 未返回 session"
+    curl --noproxy '*' -sS -o /dev/null -X POST \
+        -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+        -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$MCP_URL"
+
+    mcp_call() {
+        local id="$1" name="$2" arguments="$3"
+        curl --noproxy '*' -sS -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+            -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"tools/call\",\"params\":{\"name\":\"$name\",\"arguments\":$arguments}}" \
+            "$MCP_URL"
+    }
+
+    CONFIG=$(mcp_call 2 llm_configure \
+        "{\"endpoint\":\"http://127.0.0.1:${FAKE_PORT}/v1\",\"model\":\"fixture\",\"api_key\":\"smoke-secret\"}")
+    printf '%s\n' "$CONFIG" | grep -q '"configured":true' || fail "LLM 配置失败"
+
+    COMPACT=$(mcp_call 3 webfetch \
+        "{\"url\":\"http://127.0.0.1:${FAKE_PORT}/page\",\"mode\":\"compact\"}")
+    printf '%s\n' "$COMPACT" | grep -q 'compact-ok' || fail "compact 未返回模型语义字段"
+    printf '%s\n' "$COMPACT" | grep -q 'ORIGINAL_CODE' || fail "确定性代码字段未保真"
+    if printf '%s\n' "$COMPACT" | grep -q 'MODEL_CHANGED_CODE'; then
+        fail "模型改写的代码污染了结果"
+    fi
+    PAGE_ID=$(printf '%s\n' "$COMPACT" | python3 -c 'import json,sys; s=sys.stdin.read(); d=[x[6:] for x in s.splitlines() if x.startswith("data: ")]; o=json.loads(d[-1] if d else s); print(o["result"]["structuredContent"]["page"]["page_id"])')
+    [ "${#PAGE_ID}" = 24 ] || fail "compact 未返回有效 page_id"
+
+    FOCUS=$(mcp_call 4 webfetch \
+        "{\"url\":\"http://127.0.0.1:${FAKE_PORT}/page\",\"mode\":\"focus\",\"intent\":\"只看安装\"}")
+    if ! printf '%s\n' "$FOCUS" | grep -q 'focus-ok'; then
+        printf '%s\n' "$FOCUS" | head -c 2000 >&2 || true
+        fail "focus 模式/意图未传到模型"
+    fi
+
+    EXPANDED=$(mcp_call 5 expand "{\"page_id\":\"$PAGE_ID\",\"section\":\"Install\"}")
+    if ! printf '%s\n' "$EXPANDED" | grep -q 'original installation detail'; then
+        printf '%s\n' "$EXPANDED" | head -c 2000 >&2 || true
+        fail "expand 未返回缓存中的原始章节"
+    fi
+    echo "== compact + focus + deterministic merge + page_id + expand ✓ =="
+    ;;
 opentest)
     # 端到端：搜索 → 点进第一条结果 → 提取详情页
     # 用法: ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]
@@ -304,6 +399,6 @@ clean)
     "$GRADLE_CMD" clean --no-daemon
     ;;
 *)
-    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|clean）"
+    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|llmtest|clean）"
     ;;
 esac

@@ -3,9 +3,9 @@ package com.kenjc.pagekit.compress
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
 
-/** V1 占位实现：不做语义压缩，直接返回规则装配的结构化结果 */
+/** 纯离线透传实现，适合嵌入方只需要 raw 模式时使用。 */
 class NoopCompressor : Compressor {
     override val name: String = "noop"
     override suspend fun compress(request: FetchRequest, context: PageContext): CompressedPage =
-        context.structured
+        context.structured.copy(page_id = context.pageId.takeIf(String::isNotBlank))
 }

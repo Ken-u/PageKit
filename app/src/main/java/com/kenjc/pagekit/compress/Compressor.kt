@@ -6,7 +6,7 @@ import com.kenjc.pagekit.api.dto.FetchRequest
 /**
  * 压缩引擎接口（PLAN.md M6 / SPECS.md 压缩引擎）：
  * 输入页面上下文（url/title/markdown/intent/mode），输出符合 Schema 的 CompressedPage。
- * V1 只有 NoopCompressor（透传规则装配结果）；V2 接 LLM。
+ * raw 可用 NoopCompressor 透传；默认应用装配 OpenAiCompatibleCompressor。
  */
 interface Compressor {
 
@@ -21,4 +21,6 @@ data class PageContext(
     val title: String,
     val markdown: String,
     val structured: CompressedPage,
+    val pageId: String = "",
+    val sections: List<CachedSection> = emptyList(),
 )

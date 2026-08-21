@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.compress.PromptBuilder
+import com.kenjc.pagekit.compress.LlmConfig
+import com.kenjc.pagekit.compress.LlmConfigStatus
+import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.engine.LoadState
 import com.kenjc.pagekit.engine.SearchEngine
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
@@ -36,6 +39,7 @@ class HomeViewModel(
     app: Application,
     private val runtime: AndroidPageKitRuntime,
     private val api: DefaultPageKitApi,
+    private val llmSettings: LlmSettings,
 ) : AndroidViewModel(app) {
 
     private val jsonFmt = Json { prettyPrint = true; encodeDefaults = false }
@@ -57,8 +61,40 @@ class HomeViewModel(
     private val _focusIntent = MutableStateFlow("")
     val focusIntent: StateFlow<String> = _focusIntent.asStateFlow()
 
+    private val _compressionMode = MutableStateFlow("raw")
+    val compressionMode: StateFlow<String> = _compressionMode.asStateFlow()
+
+    private val _llmStatus = MutableStateFlow(llmSettings.status())
+    val llmStatus: StateFlow<LlmConfigStatus> = _llmStatus.asStateFlow()
+    val llmConfigMessage = MutableStateFlow("")
+
     fun setFocusIntent(v: String) {
         _focusIntent.value = v
+    }
+
+    fun setCompressionMode(mode: String) {
+        require(mode in setOf("raw", "compact", "focus"))
+        _compressionMode.value = mode
+    }
+
+    fun saveLlmConfig(endpoint: String, model: String, apiKey: String) {
+        runCatching {
+            val previous = llmSettings.load()
+            llmSettings.save(
+                LlmConfig(
+                    endpoint = endpoint,
+                    model = model,
+                    apiKey = apiKey.takeIf(String::isNotBlank) ?: previous.apiKey,
+                    maxInputChars = previous.maxInputChars,
+                    maxOutputTokens = previous.maxOutputTokens,
+                ),
+            )
+        }.onSuccess {
+            _llmStatus.value = llmSettings.status()
+            llmConfigMessage.value = "配置已保存"
+        }.onFailure {
+            llmConfigMessage.value = it.message ?: "配置无效"
+        }
     }
 
     fun snapshotElements() {
@@ -83,7 +119,7 @@ class HomeViewModel(
         }
     }
 
-    /** intent 驱动的诊断/浏览器控制入口，和未来 MCP 共用 DefaultPageKitApi 的串行通道。 */
+    /** intent 驱动的诊断/浏览器控制入口，和 MCP 共用 DefaultPageKitApi 的串行通道。 */
     fun controlOp(
         op: String,
         eid: String?,
@@ -127,6 +163,7 @@ class HomeViewModel(
                     title = loader.webView.title ?: "",
                     intent = focusIntent?.takeIf { it.isNotBlank() },
                     markdown = _extractState.value.markdown.ifBlank { "(尚未提取)" },
+                    mode = _compressionMode.value,
                 )
                 else -> errOp("unknown op: $op")
             }
@@ -191,7 +228,7 @@ class HomeViewModel(
             val request = FetchRequest(
                 url = loader.currentUrl(),
                 intent = _focusIntent.value.takeIf(String::isNotBlank),
-                mode = "raw",
+                mode = _compressionMode.value,
             )
             runCatching { api.extractCurrent(request) }
                 .onSuccess { applyResult(it) }

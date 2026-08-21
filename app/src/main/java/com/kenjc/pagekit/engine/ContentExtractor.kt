@@ -29,20 +29,16 @@ class ContentExtractor(private val context: Context) {
         val contentHtml: String,
     )
 
-    private var readabilityInjectedForUrl: String? = null
-
-    /** 注入 Readability.js（同一页面只注一次） */
-    private fun ensureReadability(webView: WebView, url: String) {
-        if (readabilityInjectedForUrl == url) return
+    /** 每次提取都注入：同 URL reload 也会创建全新的 JS document/global。 */
+    private fun ensureReadability(webView: WebView) {
         val js = context.assets.open("readability/Readability.js").bufferedReader().use { it.readText() }
         // 顶层 var 在全局作用域求值 → window.Readability；尾部 module.exports 分支在浏览器上下文自动跳过
         webView.evaluateJavascript(js, null)
-        readabilityInjectedForUrl = url
     }
 
     suspend fun extract(webView: WebView, elementHidingRules: List<String> = emptyList()): Result {
-        val url = webView.url ?: return Result(false, "none", "", "", "")
-        ensureReadability(webView, url)
+        if (webView.url == null) return Result(false, "none", "", "", "")
+        ensureReadability(webView)
         val selectors = (NoiseRules.SELECTORS + elementHidingRules).distinct()
         val raw = evalJs(webView, extractScript(selectors)) ?: return Result(false, "none", "", "", "")
         return withContext(Dispatchers.Default) {

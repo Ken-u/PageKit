@@ -3,8 +3,11 @@ package com.kenjc.pagekit.runtime
 import android.content.Context
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.compress.Compressor
+import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.NoopCompressor
+import com.kenjc.pagekit.compress.PageExpansionCache
 import com.kenjc.pagekit.compress.PageContext
 import com.kenjc.pagekit.engine.BrowserController
 import com.kenjc.pagekit.engine.ContentExtractor
@@ -35,6 +38,7 @@ data class RuntimePageResult(
 interface PageKitRuntime {
     suspend fun fetch(request: FetchRequest): RuntimePageResult
     suspend fun extractCurrent(request: FetchRequest): RuntimePageResult
+    suspend fun expand(pageId: String?, section: String): ExpandedSection
     suspend fun listInteractiveElements(): List<String>
     suspend fun click(elementId: String): String
     suspend fun type(elementId: String, text: String): String
@@ -50,6 +54,7 @@ class AndroidPageKitRuntime(
     context: Context,
     private val adBlocker: AdBlocker = NoopAdBlocker,
     private val compressor: Compressor = NoopCompressor(),
+    private val pageCache: PageExpansionCache = FilePageExpansionCache(context),
 ) : PageKitRuntime {
 
     val loader = WebPageLoader(context, adBlocker)
@@ -65,7 +70,8 @@ class AndroidPageKitRuntime(
 
     override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult {
         val startedAt = System.currentTimeMillis()
-        val elementHidingRules = adBlocker.elementHidingRules(loader.currentUrl())
+        val pageUrl = withContext(Dispatchers.Main.immediate) { loader.currentUrl() }
+        val elementHidingRules = adBlocker.elementHidingRules(pageUrl)
         val extracted = withContext(Dispatchers.Main.immediate) {
             extractor.extract(loader.webView, elementHidingRules)
         }
@@ -75,6 +81,9 @@ class AndroidPageKitRuntime(
             HtmlToMarkdown.convert(extracted.contentHtml)
         }
         val structured = assembler.assemble(loader.webView, elementHidingRules)
+        val cached = withContext(Dispatchers.IO) {
+            pageCache.store(structured.url.ifBlank { request.url }, extracted.title, markdown)
+        }
         val page = withContext(Dispatchers.Default) {
             compressor.compress(
                 request,
@@ -82,6 +91,8 @@ class AndroidPageKitRuntime(
                     title = extracted.title,
                     markdown = markdown,
                     structured = structured,
+                    pageId = cached.pageId,
+                    sections = cached.sections,
                 ),
             )
         }
@@ -93,6 +104,9 @@ class AndroidPageKitRuntime(
             durationMs = System.currentTimeMillis() - startedAt,
         )
     }
+
+    override suspend fun expand(pageId: String?, section: String): ExpandedSection =
+        withContext(Dispatchers.IO) { pageCache.expand(pageId, section) }
 
     private suspend fun loadAndAwait(url: String) = withContext(Dispatchers.Main.immediate) {
         loader.loadUrl(url)

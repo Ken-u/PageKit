@@ -151,6 +151,7 @@ URL：{{url}}
 
 ```json
 {
+  "page_id": "",
   "title": "",
   "url": "",
   "summary": "",
@@ -174,6 +175,7 @@ URL：{{url}}
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `page_id` | `string` | PageKit 缓存页标识，用于 `expand`（实现扩展） |
 | `title` | `string` | 页面标题 |
 | `url` | `string` | 页面 URL |
 | `summary` | `string` | 页面主要内容概述（≤ 150 字） |
@@ -354,10 +356,10 @@ FAQ
 Appendix
 ```
 
-方便 Agent 执行：
+PageKit 会同时返回 `page_id` 和稳定的 `section_id`，方便 Agent 执行：
 
 ```text
-expand("Performance")
+expand(page_id="…", section="s2")
 ```
 
 无需重新抓取网页。

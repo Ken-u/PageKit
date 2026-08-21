@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -65,6 +67,8 @@ fun HomeScreen(
     val loadState by vm.loadState.collectAsStateWithLifecycle()
     val canGoBack by vm.canGoBack.collectAsStateWithLifecycle()
     val extractState by vm.extractState.collectAsStateWithLifecycle()
+    val compressionMode by vm.compressionMode.collectAsStateWithLifecycle()
+    val focusIntent by vm.focusIntent.collectAsStateWithLifecycle()
 
     // intent 驱动：初始 URL + 就绪后自动提取（adb/MCP 验证入口；提取在 VM 侧自动触发）
     LaunchedEffect(initialUrl, autoExtract) {
@@ -114,9 +118,33 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 OutlinedButton(
                     onClick = vm::extract,
-                    enabled = loadState is LoadState.Ready && !extractState.running,
+                    enabled = loadState is LoadState.Ready &&
+                        !extractState.running &&
+                        (compressionMode != "focus" || focusIntent.isNotBlank()),
                 ) {
                     Text("提取")
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                listOf("raw", "compact", "focus").forEach { mode ->
+                    OutlinedButton(
+                        onClick = { vm.setCompressionMode(mode) },
+                        enabled = compressionMode != mode,
+                        modifier = Modifier.padding(end = 6.dp),
+                    ) { Text(mode) }
+                }
+                if (compressionMode == "focus") {
+                    OutlinedTextField(
+                        value = focusIntent,
+                        onValueChange = vm::setFocusIntent,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Focus 意图") },
+                    )
                 }
             }
 
@@ -185,7 +213,7 @@ private fun MarkdownTab(state: ExtractUiState, modifier: Modifier = Modifier) {
 private fun JsonTab(state: ExtractUiState, modifier: Modifier = Modifier) {
     ResultPane(
         state = state,
-        emptyHint = "提取后展示 SPECS.md JSON 骨架（语义字段 V2 由 LLM 填充）",
+        emptyHint = "提取后展示结构化 JSON；compact/focus 会填充语义字段",
         text = { it.json.ifBlank { "（结构化装配未完成）" } },
         modifier = modifier,
     )
@@ -195,6 +223,12 @@ private fun JsonTab(state: ExtractUiState, modifier: Modifier = Modifier) {
 @Composable
 private fun PromptTab(vm: HomeViewModel, state: ExtractUiState, modifier: Modifier = Modifier) {
     val intent by vm.focusIntent.collectAsStateWithLifecycle()
+    val mode by vm.compressionMode.collectAsStateWithLifecycle()
+    val llmStatus by vm.llmStatus.collectAsStateWithLifecycle()
+    val llmConfigMessage by vm.llmConfigMessage.collectAsStateWithLifecycle()
+    var endpoint by rememberSaveable { mutableStateOf(llmStatus.endpoint) }
+    var model by rememberSaveable { mutableStateOf(llmStatus.model) }
+    var apiKey by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
     val prompt = if (state.ok) {
@@ -203,6 +237,7 @@ private fun PromptTab(vm: HomeViewModel, state: ExtractUiState, modifier: Modifi
             title = state.title,
             intent = intent,
             markdown = state.markdown,
+            mode = mode,
         )
     } else {
         ""
@@ -212,10 +247,6 @@ private fun PromptTab(vm: HomeViewModel, state: ExtractUiState, modifier: Modifi
         clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("PageKit Prompt", prompt))
     }
 
-    if (!state.ok) {
-        Placeholder("提取后可导出 SPECS.md 三段完整 Prompt（手动贴给任意 LLM 验证）")
-        return
-    }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -231,10 +262,45 @@ private fun PromptTab(vm: HomeViewModel, state: ExtractUiState, modifier: Modifi
                 label = { Text("用户意图（Focus 模式，可空）") },
             )
             Spacer(modifier = Modifier.width(8.dp))
-            TextButton(onClick = ::copy) { Text("复制完整 Prompt") }
+            TextButton(onClick = ::copy, enabled = state.ok) { Text("复制完整 Prompt") }
+        }
+        Text("OpenAI-compatible Compressor", modifier = Modifier.padding(top = 16.dp))
+        OutlinedTextField(
+            value = endpoint,
+            onValueChange = { endpoint = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Endpoint（base URL）") },
+        )
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Model") },
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            label = { Text(if (llmStatus.hasApiKey) "API key（已保存；留空则保留）" else "API key（本地模型可空）") },
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = {
+                vm.saveLlmConfig(endpoint, model, apiKey)
+                apiKey = ""
+            }) { Text("保存 LLM 配置") }
+            Text(
+                llmConfigMessage.ifBlank {
+                    if (llmStatus.configured) "已配置" else "未配置（raw 不受影响）"
+                },
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
         Text(
-            prompt,
+            prompt.ifBlank { "提取后可导出 SPECS.md 三段完整 Prompt" },
             modifier = Modifier.padding(top = 8.dp),
             fontFamily = FontFamily.Monospace,
         )

@@ -14,7 +14,7 @@ import kotlin.coroutines.resume
 /**
  * 规则化结构化装配（PLAN.md M4）：
  * 从当前页面 JS 快照确定性填充 JSON 骨架（SPECS.md Schema）。
- * 语义字段（summary/key_points/sections/warnings 归类等）V2 由 LLM 填充。
+ * 语义字段（summary/key_points/sections/warnings 归类等）由 Compressor 填充。
  *
  * 必须在主线程调用（WebView 约束）。
  */
@@ -23,8 +23,10 @@ class StructuredAssembler {
     suspend fun assemble(webView: WebView, elementHidingRules: List<String> = emptyList()): CompressedPage {
         // evaluateJavascript 必须主线程；JSON 解析留在当前上下文
         val selectors = (NoiseRules.SELECTORS + elementHidingRules).distinct()
-        val raw = withContext(Dispatchers.Main.immediate) { evalJs(webView, snapshotScript(selectors)) } ?: "{}"
-        return parse(raw, webView.url ?: "")
+        val (raw, url) = withContext(Dispatchers.Main.immediate) {
+            (evalJs(webView, snapshotScript(selectors)) ?: "{}") to (webView.url ?: "")
+        }
+        return parse(raw, url)
     }
 
     private fun parse(raw: String, url: String): CompressedPage = runCatching {
@@ -52,7 +54,7 @@ class StructuredAssembler {
             links = json.optJSONArray("links")?.mapObjects { o ->
                 CompressedPage.Link(text = o.optString("text"), url = o.optString("url"))
             },
-            // V2 LLM 填充（V1 显式 null，与 SPECS.md 一致）
+            // 语义字段留给 Compressor；raw 模式保持 null。
             interactive_elements = json.optJSONArray("interactive")?.mapStrings { it },
         )
     }.getOrDefault(CompressedPage(url = url))

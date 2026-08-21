@@ -4,7 +4,7 @@
 
 > 保真压缩（Information Compression），而不是内容摘要（Summary）。
 
-## V1 功能
+## 功能
 
 | 能力 | 说明 |
 | --- | --- |
@@ -12,10 +12,13 @@
 | 搜索引擎直航 | 五引擎 URL 模板（Bing 默认 / Baidu / Sogou / 360 / Google），输入关键词直接拼接结果页 URL 导航，无需进首页 |
 | 主内容提取 | Readability.js + 克隆 DOM 去噪（SPECS.md 忽略清单），最大文本块兜底 |
 | Markdown 输出 | flexmark html2md，代码/表格/链接原文保留 |
-| 结构化 JSON | SPECS.md Schema：确定性字段（code_blocks/tables/commands/links/downloads）规则填充，语义字段留待 LLM |
+| 结构化 JSON | SPECS.md Schema：确定性字段本地保真提取，语义字段由可配置 LLM 填充 |
 | 浏览器控制 | 元素快照 `[eN]` 编号 + click/type/scroll + 元素标注开关 |
 | Prompt 导出 | SPECS.md System/Developer/User 三段完整 Prompt，可复制贴给任意 LLM |
-| MCP 契约预留 | `api/PageKitApi`（fetch/webSearch/expand/交互元素/浏览器控制），V2 薄封装上 MCP |
+| LLM 压缩 | OpenAI-compatible / 端侧 endpoint，raw / compact / focus 三模式 |
+| 章节展开 | 私有缓存保存原始 Markdown，`page_id + section_id` 可无网络 `expand` |
+| MCP | 设备 localhost Streamable HTTP，Bearer token + Origin 校验 + 前台服务生命周期 |
+| 广告过滤 | StevenBlack hosts 请求过滤 + EasyList/EasyList China DOM 清洗 + 在线更新 |
 
 ## 架构
 
@@ -23,13 +26,13 @@
 URL / 关键词 → SearchEngine(引擎URL模板) → WebPageLoader(共享WebView)
     → ContentExtractor(Readability+NoiseRules 去噪) → HtmlToMarkdown
     → StructuredAssembler(JSON 骨架)
-    → compress/(Compressor V1=Noop | V2=LLM)
+    → compress/(raw 透传 | OpenAI-compatible compact/focus + PageExpansionCache)
     → ui/(网页/Markdown/JSON/Prompt 四 Tab)
 
 engine/BrowserController: [eN] 快照 + click/type/scroll/annotate
 engine/SearchEngine: 引擎注册表(bing/baidu/sogou/360/google)，URL 模板拼接
 api/PageKitApi: MCP 工具契约（fetch/webSearch/expand/交互元素/浏览器控制）
-engine/adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
+engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager 更新
 ```
 
 ## 构建
@@ -40,6 +43,8 @@ engine/adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
 ./build.sh test             # JVM 单测
 ./build.sh install [serial] # 安装到实机
 ./build.sh verify [serial]  # 实机全链路验证（加载→提取→md/json/prompt）
+./build.sh mcptest [serial] # MCP 鉴权、Origin、握手与工具发现
+./build.sh llmtest [serial] # compact/focus、确定性字段保真与 expand 闭环
 ./build.sh searchtest ["查询词"] ["https://www.bing.com"] [serial]  # 搜索结果页直航→提取（支持 baidu/bing/sogou/360/google）
 ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]   # 搜索→点进第一条真实结果→详情页提取
 ./build.sh release          # release APK
@@ -98,18 +103,21 @@ npx -y @modelcontextprotocol/inspector --web \
   --header "Authorization: Bearer $TOKEN"
 ```
 
-当前工具：`webfetch`、`websearch`、`browser_snapshot`、`browser_click`、
-`browser_type`、`browser_scroll`。`webfetch` 当前只接受 `mode=raw`。
+当前工具：`webfetch`、`websearch`、`expand`、`browser_snapshot`、`browser_click`、
+`browser_type`、`browser_scroll`、`llm_status`、`llm_configure`。
+
+`webfetch` / `websearch` 支持 `mode=raw|compact|focus`。raw 始终离线；compact/focus
+使用在 Prompt 页或 `llm_configure` 中保存的 OpenAI-compatible endpoint/model/key。
+Focus 必须提供 `intent`。LLM 的输出只采用 summary/key_points/sections 等语义字段，
+代码、命令、表格、下载和链接会由本地确定性结果覆盖，避免模型改写原文。压缩结果携带
+`page_id`，`remaining_information` 列出可传给 `expand` 的 `section_id`。
 
 广告规则以 APK 内的固定快照作为永久兜底。WorkManager 在联网条件下每 7 天检查
 StevenBlack hosts、EasyList 和 EasyList China，使用 ETag/Last-Modified 条件请求；
 响应有 12 MiB 上限，须通过完整解析和最低规则数校验后才会原子写入私有缓存并热切换。
 
-## V2 路线
+## 后续路线
 
-- LLM Compressor（OpenAI 兼容 / 端侧），Compact/Focus 模式语义压缩，`expand()` 章节缓存
-- MCP server（工具面已冻结，见 `api/PageKitApi.kt`）
-- `AdBlocker` 开源规则接入（StevenBlack hosts MIT / EasyList 元素隐藏）
 - OkHttp 静态抓取快速通道
 
 ## 许可

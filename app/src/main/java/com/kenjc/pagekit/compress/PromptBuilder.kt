@@ -2,8 +2,7 @@ package com.kenjc.pagekit.compress
 
 /**
  * SPECS.md 三段 Prompt 拼装（PLAN.md M6）。
- * V1 用途：复制完整 Prompt 手动贴给任意 LLM，验证输出是否符合 Schema；
- * V2 用途：作为 LLM Compressor 的请求体。
+ * 既用于 UI 导出，也作为 OpenAI-compatible Compressor 的请求体。
  */
 object PromptBuilder {
 
@@ -30,7 +29,7 @@ object PromptBuilder {
         - 对技术内容宁可多保留；代码/命令/配置/API/错误信息/版本号/参数/下载地址必须原文保留，不得改写。
     """.trimIndent()
 
-    fun developerPrompt(): String = """
+    fun developerPrompt(mode: String = "compact"): String = """
         网页已完整加载：JavaScript 已执行，Cookie、登录状态、动态内容均已加载。
 
         忽略：导航栏/顶部菜单/Footer/Sidebar/广告/Cookie Banner/推荐阅读/相关文章/评论区/
@@ -54,7 +53,16 @@ object PromptBuilder {
         commands[], warnings[], limitations[], downloads[{name,url}], links[{text,url}],
         interactive_elements[], remaining_information。
         语义字段填值，确定性字段（代码/命令/链接等）必须与输入一致。
+
+        ${modeInstructions(mode)}
     """.trimIndent()
+
+    private fun modeInstructions(mode: String): String = when (mode.lowercase()) {
+        "raw" -> "运行模式 Raw：不进行语义压缩，仅返回去噪后的原始信息。"
+        "focus" -> "运行模式 Focus：只允许删除与用户意图无关的内容；代码、命令、配置、警告和限制仍须原样保留。"
+        "compact" -> "运行模式 Compact：最大程度压缩重复和冗长描述，同时保留全部关键事实。"
+        else -> error("unsupported compression mode: $mode")
+    }
 
     fun userPrompt(url: String, title: String, intent: String?, markdown: String): String = """
         URL：$url
@@ -79,7 +87,7 @@ object PromptBuilder {
         appendLine(systemPrompt())
         appendLine()
         appendLine("=== DEVELOPER（运行模式：$mode） ===")
-        appendLine(developerPrompt())
+        appendLine(developerPrompt(mode))
         appendLine()
         appendLine("=== USER ===")
         appendLine(userPrompt(url, title, intent, markdown))

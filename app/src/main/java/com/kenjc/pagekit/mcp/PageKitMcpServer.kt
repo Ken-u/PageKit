@@ -2,6 +2,8 @@ package com.kenjc.pagekit.mcp
 
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.compress.LlmConfig
+import com.kenjc.pagekit.compress.LlmSettings
 import android.util.Log
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
@@ -34,13 +36,16 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 /** PageKitApi 到 MCP tools 的协议薄适配层。 */
 class PageKitMcpTools(
     private val api: DefaultPageKitApi,
+    private val llmSettings: LlmSettings,
 ) {
     private val json = Json { encodeDefaults = false }
 
@@ -51,15 +56,15 @@ class PageKitMcpTools(
                 tools = ServerCapabilities.Tools(listChanged = false),
             ),
         ),
-        instructions = "Render web pages in Android WebView, remove ads/noise, and return Markdown plus structured data.",
+        instructions = "Render pages in Android WebView, remove ads/noise, optionally compress with an LLM, and expand cached original sections.",
     ).apply {
         addTool(
             name = "webfetch",
-            description = "Render and extract an HTTP(S) page. V2 currently supports raw mode.",
+            description = "Render and extract an HTTP(S) page in raw, compact, or intent-focused mode.",
             inputSchema = schema(
                 "url" to stringProperty("HTTP(S) URL"),
                 "intent" to stringProperty("Optional extraction intent"),
-                "mode" to stringProperty("Extraction mode", enum = listOf("raw")),
+                "mode" to stringProperty("Extraction mode", enum = listOf("raw", "compact", "focus")),
                 required = listOf("url"),
             ),
         ) { request ->
@@ -67,7 +72,7 @@ class PageKitMcpTools(
                 val url = request.arguments.requiredString("url")
                 validateRemoteUrl(url)
                 val mode = request.arguments.string("mode") ?: "raw"
-                require(mode == "raw") { "unsupported mode: $mode (only raw is available)" }
+                validateMode(mode, request.arguments.string("intent"))
                 val result = api.fetchDetailed(
                     FetchRequest(
                         url = url,
@@ -80,6 +85,7 @@ class PageKitMcpTools(
                     put("markdown", result.markdown)
                     put("byline", result.byline)
                     put("extraction_mode", result.extractionMode)
+                    put("compression_mode", mode)
                     put("duration_ms", result.durationMs)
                 }
             }
@@ -87,24 +93,50 @@ class PageKitMcpTools(
 
         addTool(
             name = "websearch",
-            description = "Open a search result page in WebView and return its extracted raw content.",
+            description = "Open a search result page in WebView and extract it in raw, compact, or focus mode.",
             inputSchema = schema(
                 "query" to stringProperty("Search query"),
                 "engine" to stringProperty("Search engine", enum = listOf("bing", "baidu", "sogou", "360", "google")),
+                "intent" to stringProperty("Optional extraction intent"),
+                "mode" to stringProperty("Extraction mode", enum = listOf("raw", "compact", "focus")),
                 required = listOf("query"),
             ),
         ) { request ->
             toolResult {
+                val mode = request.arguments.string("mode") ?: "raw"
+                validateMode(mode, request.arguments.string("intent"))
                 val result = api.webSearchDetailed(
                     query = request.arguments.requiredString("query"),
                     engine = request.arguments.string("engine") ?: "bing",
+                    intent = request.arguments.string("intent"),
+                    mode = mode,
                 )
                 buildJsonObject {
                     put("page", json.encodeToJsonElement(result.page))
                     put("markdown", result.markdown)
                     put("extraction_mode", result.extractionMode)
+                    put("compression_mode", mode)
                     put("duration_ms", result.durationMs)
                 }
+            }
+        }
+
+        addTool(
+            name = "expand",
+            description = "Return one original Markdown section from the page cache without fetching the page again.",
+            inputSchema = schema(
+                "section" to stringProperty("Section ID (such as s2) or heading"),
+                "page_id" to stringProperty("Optional page_id; defaults to the latest fetched page"),
+                required = listOf("section"),
+            ),
+        ) { request ->
+            toolResult {
+                json.encodeToJsonElement(
+                    api.expand(
+                        section = request.arguments.requiredString("section"),
+                        pageId = request.arguments.string("page_id"),
+                    ),
+                ).jsonObject
             }
         }
 
@@ -163,6 +195,59 @@ class PageKitMcpTools(
                 )
             }
         }
+
+        addTool(
+            name = "llm_status",
+            description = "Show OpenAI-compatible compressor configuration without exposing the API key.",
+            inputSchema = schema(),
+        ) {
+            toolResult {
+                val status = llmSettings.status()
+                buildJsonObject {
+                    put("endpoint", status.endpoint)
+                    put("model", status.model)
+                    put("configured", status.configured)
+                    put("has_api_key", status.hasApiKey)
+                }
+            }
+        }
+
+        addTool(
+            name = "llm_configure",
+            description = "Configure the OpenAI-compatible compressor. API keys are stored in app-private preferences and never returned.",
+            inputSchema = schema(
+                "endpoint" to stringProperty("HTTPS API base URL or loopback HTTP URL"),
+                "model" to stringProperty("Chat completion model name"),
+                "api_key" to stringProperty("Optional bearer token; omit to keep the current key"),
+                "clear_api_key" to booleanProperty("Clear the stored API key", default = false),
+                required = listOf("endpoint", "model"),
+            ),
+        ) { request ->
+            toolResult {
+                val previous = llmSettings.load()
+                val key = when {
+                    request.arguments.boolean("clear_api_key") == true -> ""
+                    request.arguments?.containsKey("api_key") == true -> request.arguments.rawString("api_key")
+                    else -> previous.apiKey
+                }
+                llmSettings.save(
+                    LlmConfig(
+                        endpoint = request.arguments.requiredString("endpoint"),
+                        model = request.arguments.requiredString("model"),
+                        apiKey = key,
+                        maxInputChars = previous.maxInputChars,
+                        maxOutputTokens = previous.maxOutputTokens,
+                    ),
+                )
+                val status = llmSettings.status()
+                buildJsonObject {
+                    put("configured", status.configured)
+                    put("endpoint", status.endpoint)
+                    put("model", status.model)
+                    put("has_api_key", status.hasApiKey)
+                }
+            }
+        }
     }
 
     private suspend fun toolResult(block: suspend () -> JsonObject): CallToolResult = try {
@@ -191,6 +276,11 @@ class PageKitMcpTools(
         require(!uri.host.isNullOrBlank()) { "URL host is required" }
     }
 
+    private fun validateMode(mode: String, intent: String?) {
+        require(mode in setOf("raw", "compact", "focus")) { "unsupported mode: $mode" }
+        if (mode == "focus") require(!intent.isNullOrBlank()) { "focus mode requires intent" }
+    }
+
     private fun schema(
         vararg properties: Pair<String, JsonObject>,
         required: List<String> = emptyList(),
@@ -211,6 +301,12 @@ class PageKitMcpTools(
         put("default", default)
     }
 
+    private fun booleanProperty(description: String, default: Boolean) = buildJsonObject {
+        put("type", "boolean")
+        put("description", description)
+        put("default", default)
+    }
+
     private fun JsonObject?.string(name: String): String? {
         val value = this?.get(name)?.jsonPrimitive?.content?.trim()?.takeIf(String::isNotEmpty)
         return value
@@ -219,7 +315,11 @@ class PageKitMcpTools(
     private fun JsonObject?.requiredString(name: String): String =
         requireNotNull(string(name)) { "missing required argument: $name" }
 
+    private fun JsonObject?.rawString(name: String): String =
+        runCatching { this?.get(name)?.jsonPrimitive?.content }.getOrNull().orEmpty()
+
     private fun JsonObject?.int(name: String): Int? = this?.get(name)?.jsonPrimitive?.intOrNull
+    private fun JsonObject?.boolean(name: String): Boolean? = this?.get(name)?.jsonPrimitive?.booleanOrNull
 }
 
 /** 仅绑定设备回环地址的 Streamable HTTP server，由前台 Service 持有生命周期。 */

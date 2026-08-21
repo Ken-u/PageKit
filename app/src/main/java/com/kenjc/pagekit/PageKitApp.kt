@@ -11,6 +11,9 @@ import com.kenjc.pagekit.mcp.PageKitMcpServerController
 import com.kenjc.pagekit.mcp.PageKitMcpTools
 import com.kenjc.pagekit.mcp.McpAccessPolicy
 import com.kenjc.pagekit.mcp.McpTokenStore
+import com.kenjc.pagekit.compress.FilePageExpansionCache
+import com.kenjc.pagekit.compress.OpenAiCompatibleCompressor
+import com.kenjc.pagekit.compress.SharedPreferencesLlmSettings
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
 import com.kenjc.pagekit.ui.home.HomeViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -18,7 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
-/** Application：持有进程级 HomeViewModel，供验证通道 / V2 导出服务访问 */
+/** Application：装配进程级浏览器、API、MCP、压缩器与规则仓库。 */
 class PageKitApp : Application() {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -47,6 +50,9 @@ class PageKitApp : Application() {
     lateinit var mcpTokenStore: McpTokenStore
         private set
 
+    lateinit var llmSettings: SharedPreferencesLlmSettings
+        private set
+
     override fun onCreate() {
         super.onCreate()
         hostsRuleRepository = AssetHostsRuleRepository(this).also { it.start(applicationScope) }
@@ -54,15 +60,22 @@ class PageKitApp : Application() {
         RuleUpdateScheduler.schedule(this)
         hostsAdBlocker = HostsAdBlocker(
             repository = hostsRuleRepository,
-            initialAllowlist = setOf("localhost", "127.0.0.1"),
+            initialAllowlist = setOf("localhost", "127.0.0.1", "::1"),
         )
         val adBlocker = CompositeAdBlocker(hostsAdBlocker, cosmeticRuleRepository)
-        runtime = AndroidPageKitRuntime(this, adBlocker)
+        llmSettings = SharedPreferencesLlmSettings(this)
+        val pageCache = FilePageExpansionCache(this)
+        runtime = AndroidPageKitRuntime(
+            context = this,
+            adBlocker = adBlocker,
+            compressor = OpenAiCompatibleCompressor(llmSettings),
+            pageCache = pageCache,
+        )
         pageKitApi = DefaultPageKitApi(runtime)
-        homeViewModel = HomeViewModel(this, runtime, pageKitApi)
+        homeViewModel = HomeViewModel(this, runtime, pageKitApi, llmSettings)
         mcpTokenStore = McpTokenStore(this).also { it.token }
         mcpServer = PageKitMcpServerController(
-            tools = PageKitMcpTools(pageKitApi),
+            tools = PageKitMcpTools(pageKitApi, llmSettings),
             accessPolicy = McpAccessPolicy(mcpTokenStore.token),
         )
     }

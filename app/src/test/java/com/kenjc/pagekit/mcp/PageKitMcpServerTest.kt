@@ -3,6 +3,9 @@ package com.kenjc.pagekit.mcp
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.compress.LlmConfig
+import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import io.modelcontextprotocol.kotlin.sdk.client.Client
@@ -20,7 +23,8 @@ class PageKitMcpServerTest {
     @Test
     fun `官方 MCP client 可发现并调用 PageKit tools`() = runBlocking {
         val runtime = FakeRuntime()
-        val server = PageKitMcpTools(DefaultPageKitApi(runtime)).createServer()
+        val settings = FakeSettings()
+        val server = PageKitMcpTools(DefaultPageKitApi(runtime), settings).createServer()
         val transports = ChannelTransport.createLinkedPair()
         server.createSession(transports.serverTransport)
         val client = Client(Implementation(name = "pagekit-test", version = "1"))
@@ -28,7 +32,10 @@ class PageKitMcpServerTest {
 
         val names = client.listTools().tools.map { it.name }.toSet()
         assertEquals(
-            setOf("webfetch", "websearch", "browser_snapshot", "browser_click", "browser_type", "browser_scroll"),
+            setOf(
+                "webfetch", "websearch", "expand", "browser_snapshot", "browser_click", "browser_type",
+                "browser_scroll", "llm_status", "llm_configure",
+            ),
             names,
         )
 
@@ -43,6 +50,18 @@ class PageKitMcpServerTest {
         assertFalse(fetch.isError == true)
         assertEquals("https://example.com", runtime.lastRequest?.url)
         assertTrue(fetch.content.isNotEmpty())
+
+        val expanded = client.callTool("expand", mapOf("section" to "s1", "page_id" to "page-1"))
+        assertFalse(expanded.isError == true)
+        assertEquals("s1", expanded.structuredContent?.get("section_id")?.toString()?.trim('"'))
+
+        val configured = client.callTool(
+            "llm_configure",
+            mapOf("endpoint" to "https://llm.example/v1", "model" to "test-model", "api_key" to "secret"),
+        )
+        assertFalse(configured.isError == true)
+        assertEquals("secret", settings.config.apiKey)
+        assertFalse(configured.content.toString().contains("secret"))
 
         val rejected = client.callTool(
             name = "webfetch",
@@ -69,6 +88,8 @@ class PageKitMcpServerTest {
         }
 
         override suspend fun extractCurrent(request: FetchRequest): RuntimePageResult = fetch(request)
+        override suspend fun expand(pageId: String?, section: String): ExpandedSection =
+            ExpandedSection(pageId ?: "latest", section, "Heading", "# Heading\nOriginal")
         override suspend fun listInteractiveElements(): List<String> = listOf("[e1] button Go")
         override suspend fun click(elementId: String): String = ok()
         override suspend fun type(elementId: String, text: String): String = ok()
@@ -79,5 +100,13 @@ class PageKitMcpServerTest {
         override suspend fun armSubmitHook(): String = ok()
 
         private fun ok() = """{"ok":true}"""
+    }
+
+    private class FakeSettings : LlmSettings {
+        var config = LlmConfig()
+        override fun load(): LlmConfig = config
+        override fun save(config: LlmConfig) {
+            this.config = config.validated()
+        }
     }
 }

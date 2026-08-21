@@ -2,6 +2,7 @@ package com.kenjc.pagekit.api
 
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.engine.SearchEngine
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
@@ -31,20 +32,28 @@ class DefaultPageKitApi(
     suspend fun extractCurrent(request: FetchRequest): RuntimePageResult =
         sessionMutex.withLock { runtime.extractCurrent(request) }
 
+    override suspend fun expand(section: String, pageId: String?): ExpandedSection =
+        sessionMutex.withLock { runtime.expand(pageId, section) }
+
     override suspend fun listInteractiveElements(): List<String> =
         sessionMutex.withLock { runtime.listInteractiveElements() }
 
     override suspend fun webSearch(query: String, engine: String): CompressedPage =
         webSearchDetailed(query, engine).page
 
-    suspend fun webSearchDetailed(query: String, engine: String = SearchEngine.DEFAULT): RuntimePageResult {
+    suspend fun webSearchDetailed(
+        query: String,
+        engine: String = SearchEngine.DEFAULT,
+        intent: String? = null,
+        mode: String = "raw",
+    ): RuntimePageResult {
         val resolved = requireNotNull(SearchEngine.resolve(engine)) {
             "unknown search engine: $engine"
         }
         val url = requireNotNull(SearchEngine.buildResultUrl(resolved, query)) {
             "unknown search engine: $engine"
         }
-        return fetchDetailed(FetchRequest(url = url, mode = "raw"))
+        return fetchDetailed(FetchRequest(url = url, intent = intent, mode = mode))
     }
 
     override suspend fun click(elementId: String): Boolean =
