@@ -129,6 +129,67 @@ verify)
     $A shell "run-as $PKG wc -c files/control_result.txt" | awk '{print "prompt bytes:", $1}'
     $A shell pidof "$PKG" >/dev/null && echo "== 进程存活 ✓ ==" || fail "进程已退出"
     ;;
+opentest)
+    # 端到端：搜索 → 点进第一条结果 → 提取详情页
+    # 用法: ./build.sh opentest ["查询词"] ["https://www.baidu.com"] [serial]
+    QUERY="${2:-RTX5090}"
+    ENGINE="${3:-https://www.baidu.com}"
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${4:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+
+    ctl() { timeout 20 $A shell am start -a "${PKG}.CONTROL" "$@" >/dev/null 2>&1 || true; sleep 1.5; }
+    ctlfile() { timeout 15 $A shell "run-as $PKG cat files/control_result.txt" 2>/dev/null | tr -d '\r' || true; }
+
+    echo "== 设备: $DEV_ADDR | 引擎: $ENGINE | 查询: $QUERY =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    # 直航结果页（复用 searchtest 已验证的稳定链路）
+    case "$ENGINE" in
+        *baidu*)  RESULT_URL="https://www.baidu.com/s?wd=$(echo "$QUERY" | sed 's/ /%20/g')" ;;
+        *bing*)   RESULT_URL="https://www.bing.com/search?q=$(echo "$QUERY" | sed 's/ /%20/g')" ;;
+        *)        RESULT_URL="$ENGINE" ;;
+    esac
+    $A shell am start -W -n "$PKG/.MainActivity" -d "$RESULT_URL" >/dev/null
+    sleep 10
+
+    # 快照并选第一条「真实结果」链接：
+    #   优先 label 含查询主词（广告卡片通常是「新款/十大/新品上市」类营销词，不含查询词）；
+    #   排除 tab/筛选/广告类标签
+    ctl --es op snapshot
+    QTOKEN=$(echo "$QUERY" | awk '{print $1}')   # 查询主词（如 RTX5090）
+    RESULT_EID=$(ctlfile | grep -E '\[e[0-9]+\] a ' \
+        | grep -vE '综合|笔记|视频|图片|资讯|AI搜索|百度|下一页|更多|反馈|帮助|登录|设置|广告|推广|立即|下载|咨询|电话' \
+        | grep "$QTOKEN" | head -1 | grep -oE 'e[0-9]+')
+    if [ -z "$RESULT_EID" ]; then
+        RESULT_EID=$(ctlfile | grep -E '\[e[0-9]+\] a ' \
+            | grep -vE '综合|笔记|视频|图片|资讯|AI搜索|百度|下一页|更多|反馈|帮助|登录|设置|广告|推广|新款|优惠|领取|立即|下载|官网|旗舰店|品牌|十大|排行|新品|性价比|NO\.1|已拨打|咨询' \
+            | head -1 | grep -oE 'e[0-9]+')
+    fi
+    echo "-- 结果链接: $RESULT_EID ($(ctlfile | grep "\[$RESULT_EID\]" | head -c 60)) --"
+    [ -n "$RESULT_EID" ] || fail "结果页无可用链接（先跑 searchtest 排查）"
+
+    ctl --es op click --es eid "$RESULT_EID"
+    CLICKED=$(ctlfile)
+    echo "-- click: $CLICKED"
+    sleep 8
+    ctl --es op title
+    echo "-- 详情页标题: $(ctlfile)"
+
+    ctl --es op extract
+    OK=0
+    for i in $(seq 1 15); do
+        R=$(timeout 20 $A shell am broadcast -a "${PKG}.FETCH_RESULT" \
+            -n "$PKG/.ResultTunnelReceiver" 2>/dev/null | grep -oE 'result=[0-9-]+' | head -1)
+        case "$R" in result=-*) ;; result=*) OK=1; break ;; esac
+        sleep 1
+    done
+    [ "$OK" = 1 ] || fail "详情页提取超时"
+    echo "-- 详情页提取 --"
+    timeout 15 $A shell "run-as $PKG cat files/last_result.txt" 2>/dev/null | tr -d '\r' | head -12
+    $A shell pidof "$PKG" >/dev/null && echo "== opentest ✓ ==" || fail "进程已退出"
+    ;;
 searchtest)
     # 端到端：搜索引擎 → 输入 → 点击搜索 → 结果页提取
     # 用法: ./build.sh searchtest ["查询词"] ["https://www.baidu.com"] [serial]

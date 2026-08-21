@@ -34,6 +34,12 @@ class BrowserController {
         opJs(eid) {
             """
             el.scrollIntoView({block:'center',inline:'nearest'});
+            // 链接：直接导航原始 href（绕过站点 JS 深链劫持，如百度结果 baiduboxapp://）
+            if (el.tagName === 'A' && el.getAttribute('href')) {
+              var href = el.href || el.getAttribute('href');
+              if (/^https?:/i.test(href)) { location.assign(href); return ok('navigated:$eid'); }
+              if (/^javascript:/i.test(href) || href.charAt(0) === '#') { el.click(); return ok('clicked-js:$eid'); }
+            }
             function fire(type, Ctor) {
               try {
                 var r = el.getBoundingClientRect();

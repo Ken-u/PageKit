@@ -89,6 +89,17 @@ class WebPageLoader(
         ): WebResourceResponse? =
             if (adBlocker.shouldBlock(request)) emptyResponse() else null
 
+        override fun shouldOverrideUrlLoading(
+            view: WebView,
+            request: WebResourceRequest,
+        ): Boolean {
+            // 拦截非 http(s) 深链（baiduboxapp://、intent:// 等），防止 App 唤起劫持导航
+            val scheme = request.url.scheme ?: return false
+            return !scheme.equals("http", true) && !scheme.equals("https", true) &&
+                !scheme.equals("file", true) && !scheme.equals("about", true) &&
+                !scheme.equals("data", true) && !scheme.equals("javascript", true)
+        }
+
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             loadStartAt = SystemClock.elapsedRealtime()
             lastProgress = 0
