@@ -1,4 +1,14 @@
-# PageKit
+<p align="center">
+  <img src="docs/assets/pagekit-icon.png" width="128" height="128" alt="PageKit icon">
+</p>
+
+<h1 align="center">PageKit</h1>
+
+<p align="center">
+  <a href="https://github.com/Ken-u/PageKit/actions/workflows/android.yml"><img src="https://github.com/Ken-u/PageKit/actions/workflows/android.yml/badge.svg" alt="Android CI"></a>
+  <img src="https://img.shields.io/badge/Android-9%2B-3DDC84?logo=android&logoColor=white" alt="Android 9+">
+  <img src="https://img.shields.io/badge/Kotlin-2.x-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin 2.x">
+</p>
 
 **WebFetch 信息压缩引擎**的 Android 实现（见 [SPECS.md](SPECS.md)）——把已完整渲染的网页转换成高信息密度、低 Token 消耗、几乎无信息损失的结构化结果，供下游 LLM/Agent 继续推理。
 
@@ -63,6 +73,26 @@ engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager �
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## 版本与 GitHub CI
+
+应用版本只有一个修改入口：[gradle.properties](gradle.properties) 中的 `PAGEKIT_VERSION`：
+
+```properties
+PAGEKIT_VERSION=0.4.0
+```
+
+版本采用 SemVer。Android `versionCode` 根据 `major * 1,000,000 + minor * 1,000 + patch`
+自动生成，不需要再手工同步。修改版本并推送到 `main` 后，
+[Android CI](https://github.com/Ken-u/PageKit/actions/workflows/android.yml) 会自动：
+
+1. 使用 JDK 17 运行 JVM 单元测试；
+2. 编译可直接安装的 debug APK；
+3. 生成 SHA-256 校验文件；
+4. 将 `PageKit-v<version>-<commit>-debug.apk` 保存为 30 天的 Actions Artifact。
+
+Pull Request、手动触发和 `v*` tag 也会执行同一流程。tag 必须与版本严格一致，例如
+`PAGEKIT_VERSION=0.4.0` 对应 `v0.4.0`，不一致时 CI 会明确失败。
 
 ## adb 验证通道
 

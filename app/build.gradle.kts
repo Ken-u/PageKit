@@ -1,5 +1,20 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+fun semVerToVersionCode(versionName: String): Int {
+    val match = Regex(
+        "^(\\d+)\\.(\\d+)\\.(\\d+)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+    ).matchEntire(versionName) ?: error("PAGEKIT_VERSION must be SemVer, got: $versionName")
+    val (major, minor, patch) = match.destructured
+    require(minor.toInt() < 1_000 && patch.toInt() < 1_000) {
+        "PAGEKIT_VERSION minor and patch must be below 1000"
+    }
+    return (major.toLong() * 1_000_000L + minor.toLong() * 1_000L + patch.toLong()).also {
+        require(it in 1..2_100_000_000L) { "PAGEKIT_VERSION produces an invalid Android versionCode: $it" }
+    }.toInt()
+}
+
+val pageKitVersion = providers.gradleProperty("PAGEKIT_VERSION").get()
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -15,8 +30,8 @@ android {
         applicationId = "com.kenjc.pagekit"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = semVerToVersionCode(pageKitVersion)
+        versionName = pageKitVersion
     }
 
     buildTypes {

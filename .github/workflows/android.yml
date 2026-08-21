@@ -1,0 +1,72 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '$1 == "PAGEKIT_VERSION" { print $2 }' gradle.properties | tr -d '[:space:]')"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid PAGEKIT_VERSION: $version" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME must match PAGEKIT_VERSION=$version" >&2
+            exit 1
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          echo "apk=PageKit-v${version}-${GITHUB_SHA::7}-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests and build debug APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Stage versioned APK
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/${{ steps.version.outputs.apk }}"
+          sha256sum "dist/${{ steps.version.outputs.apk }}" > "dist/${{ steps.version.outputs.apk }}.sha256"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PageKit-v${{ steps.version.outputs.name }}-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
