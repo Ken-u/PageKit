@@ -33,7 +33,15 @@ adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
 ## 构建
 
 ```bash
-# 需 JDK 17 + Android SDK（platform-35 / build-tools 35）
+# 一键脚本（自动配 JAVA_HOME/ANDROID_HOME，优先系统 adb）
+./build.sh build            # debug APK
+./build.sh test             # JVM 单测
+./build.sh install [serial] # 安装到实机
+./build.sh verify [serial]  # 实机全链路验证（加载→提取→md/json/prompt）
+./build.sh release          # release APK
+./build.sh clean
+
+# 手动方式：需 JDK 17 + Android SDK（platform-35 / build-tools 35）
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
