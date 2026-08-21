@@ -54,6 +54,7 @@ dependencies {
     implementation(libs.flexmark.html2md)
     implementation(libs.ktor.server.cio)
     implementation(libs.mcp.kotlin.server)
+    implementation(libs.androidx.work.runtime)
     testImplementation(libs.junit)
     testImplementation(libs.mcp.kotlin.client)
     testImplementation(libs.mcp.kotlin.testing)

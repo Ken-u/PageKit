@@ -8,11 +8,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.kenjc.pagekit.ui.home.HomeScreen
 import com.kenjc.pagekit.ui.theme.PageKitTheme
+import com.kenjc.pagekit.mcp.McpServerService
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        startForegroundService(Intent(this, McpServerService::class.java))
         enableEdgeToEdge()
         handleIntents(intent)
         val initialUrl = intent.initialUrl

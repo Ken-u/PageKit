@@ -7,6 +7,8 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 interface CosmeticRuleRepository {
     fun snapshot(): CosmeticRuleSet
@@ -15,6 +17,7 @@ interface CosmeticRuleRepository {
 class AssetCosmeticRuleRepository(
     private val context: Context,
     private val assetPaths: List<String> = DEFAULT_ASSETS,
+    private val cacheFileNames: List<String> = CACHE_FILE_NAMES,
 ) : CosmeticRuleRepository {
 
     private val current = AtomicReference(CosmeticRuleSet.EMPTY)
@@ -23,7 +26,7 @@ class AssetCosmeticRuleRepository(
 
     fun start(scope: CoroutineScope) {
         scope.launch {
-            runCatching { load() }
+            runCatching { loadBestAvailable() }
                 .onSuccess {
                     current.set(it)
                     Log.i(TAG, "cosmetic rules loaded: ${it.stats}")
@@ -32,16 +35,52 @@ class AssetCosmeticRuleRepository(
         }
     }
 
-    private fun load(): CosmeticRuleSet = CosmeticRuleParser.parse(
-        assetPaths.map { path ->
-            context.assets.open(path).use { raw ->
-                GZIPInputStream(raw).bufferedReader().use { it.readText() }
+    suspend fun reloadFromCache(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { loadBestAvailable(requireAtLeastOneCache = true) }
+            .onSuccess { current.set(it) }
+            .onFailure { Log.e(TAG, "cosmetic cache reload failed; keeping previous snapshot", it) }
+            .isSuccess
+    }
+
+    private fun loadBestAvailable(requireAtLeastOneCache: Boolean = false): CosmeticRuleSet {
+        if (requireAtLeastOneCache) return loadMixedSnapshot(requireAtLeastOneCache = true)
+        return runCatching { loadMixedSnapshot(requireAtLeastOneCache = false) }
+            .getOrElse {
+                Log.w(TAG, "cosmetic cache invalid; falling back to bundled snapshot", it)
+                parseAndValidate(assetPaths.map(::readAsset))
             }
-        },
-    )
+    }
+
+    private fun loadMixedSnapshot(requireAtLeastOneCache: Boolean): CosmeticRuleSet {
+        require(assetPaths.size == cacheFileNames.size)
+        var cached = 0
+        val texts = assetPaths.zip(cacheFileNames).map { (assetPath, cacheName) ->
+            val cache = context.filesDir.resolve("adblock/$cacheName")
+            if (cache.isFile) {
+                cached++
+                cache.bufferedReader().use { it.readText() }
+            } else {
+                readAsset(assetPath)
+            }
+        }
+        if (requireAtLeastOneCache) require(cached > 0) { "cosmetic cache missing" }
+        return parseAndValidate(texts)
+    }
+
+    private fun parseAndValidate(texts: List<String>): CosmeticRuleSet {
+        val rules = CosmeticRuleParser.parse(texts)
+        require(rules.stats.accepted >= MIN_COSMETIC_RULES) { "cosmetic cache has too few supported rules" }
+        return rules
+    }
+
+    private fun readAsset(assetPath: String): String = context.assets.open(assetPath).use { raw ->
+        GZIPInputStream(raw).bufferedReader().use { it.readText() }
+    }
 
     companion object {
         val DEFAULT_ASSETS = listOf("adblock/easylist.dat", "adblock/easylistchina.dat")
+        val CACHE_FILE_NAMES = listOf("easylist.txt", "easylistchina.txt")
+        const val MIN_COSMETIC_RULES = 1_000
         private const val TAG = "PageKit.AdBlock"
     }
 }

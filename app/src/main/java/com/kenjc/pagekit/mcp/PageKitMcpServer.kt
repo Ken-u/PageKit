@@ -2,10 +2,16 @@ package com.kenjc.pagekit.mcp
 
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
+import android.util.Log
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.request.header
+import io.ktor.server.request.path
+import io.ktor.server.response.respondText
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
@@ -16,6 +22,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import java.net.URI
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -214,29 +222,81 @@ class PageKitMcpTools(
     private fun JsonObject?.int(name: String): Int? = this?.get(name)?.jsonPrimitive?.intOrNull
 }
 
-/** 进程内 Streamable HTTP server；持久前台生命周期与认证在下一阶段补齐。 */
+/** 仅绑定设备回环地址的 Streamable HTTP server，由前台 Service 持有生命周期。 */
 class PageKitMcpServerController(
     private val tools: PageKitMcpTools,
+    private val accessPolicy: McpAccessPolicy,
     private val host: String = "127.0.0.1",
     private val port: Int = 3000,
 ) {
-    @Volatile
+    private val lifecycleLock = Any()
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    private var startingJob: Job? = null
 
     fun start(scope: CoroutineScope) {
-        if (engine != null) return
-        scope.launch {
-            val mcpServer = tools.createServer()
-            val newEngine = embeddedServer(CIO, host = host, port = port) {
-                mcpStreamableHttp(path = "/mcp") { mcpServer }
+        synchronized(lifecycleLock) {
+            if (engine != null || startingJob?.isActive == true) return
+            startingJob = scope.launch {
+                val ownJob = coroutineContext[Job]
+                var newEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+                try {
+                    val mcpServer = tools.createServer()
+                    newEngine = embeddedServer(CIO, host = host, port = port) {
+                        intercept(ApplicationCallPipeline.Plugins) {
+                            if (context.request.path() != "/mcp") return@intercept
+                            when (
+                                accessPolicy.evaluate(
+                                    authorization = context.request.header("Authorization"),
+                                    origin = context.request.header("Origin"),
+                                )
+                            ) {
+                                McpAccessDecision.ALLOW -> Unit
+                                McpAccessDecision.UNAUTHORIZED -> {
+                                    context.response.headers.append("WWW-Authenticate", "Bearer")
+                                    context.respondText("Unauthorized", status = HttpStatusCode.Unauthorized)
+                                    finish()
+                                }
+                                McpAccessDecision.FORBIDDEN_ORIGIN -> {
+                                    context.respondText("Forbidden Origin", status = HttpStatusCode.Forbidden)
+                                    finish()
+                                }
+                            }
+                        }
+                        mcpStreamableHttp(path = "/mcp") { mcpServer }
+                    }
+                    newEngine.start(wait = false)
+                    val keepRunning = synchronized(lifecycleLock) {
+                        if (ownJob?.isActive == true && startingJob === ownJob) {
+                            engine = newEngine
+                            startingJob = null
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (!keepRunning) newEngine.stop(500, 2_000)
+                    else Log.i(TAG, "MCP listening on http://$host:$port/mcp")
+                } catch (error: Throwable) {
+                    synchronized(lifecycleLock) {
+                        if (startingJob === ownJob) startingJob = null
+                    }
+                    newEngine?.stop(0, 500)
+                    if (ownJob?.isActive == true) Log.e(TAG, "MCP server failed", error)
+                }
             }
-            newEngine.start(wait = false)
-            engine = newEngine
         }
     }
 
     fun stop() {
-        engine?.stop(gracePeriodMillis = 500, timeoutMillis = 2_000)
-        engine = null
+        val running = synchronized(lifecycleLock) {
+            startingJob?.cancel()
+            startingJob = null
+            engine.also { engine = null }
+        }
+        running?.stop(gracePeriodMillis = 500, timeoutMillis = 2_000)
+    }
+
+    private companion object {
+        const val TAG = "PageKit.MCP"
     }
 }

@@ -8,6 +8,7 @@
 #   ./build.sh test         # JVM 单测
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
+#   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh clean
 #
 # 环境说明（全部用户目录，无需 root/sudo）：
@@ -129,6 +130,64 @@ verify)
     $A shell "run-as $PKG wc -c files/control_result.txt" | awk '{print "prompt bytes:", $1}'
     $A shell pidof "$PKG" >/dev/null && echo "== 进程存活 ✓ ==" || fail "进程已退出"
     ;;
+mcptest)
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+    HOST_PORT="${PAGEKIT_MCP_PORT:-19300}"
+    MCP_URL="http://127.0.0.1:${HOST_PORT}/mcp"
+
+    echo "== 设备: $DEV_ADDR | MCP: $MCP_URL =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    $A shell am start -W -n "$PKG/.MainActivity" \
+        -d "file:///android_asset/test/testpage.html" >/dev/null
+    sleep 3
+    $A forward --remove "tcp:${HOST_PORT}" >/dev/null 2>&1 || true
+    $A forward "tcp:${HOST_PORT}" tcp:3000 >/dev/null
+
+    TOKEN=$($A shell "run-as $PKG cat files/mcp_token.txt" | tr -d '\r\n')
+    [ "${#TOKEN}" -ge 32 ] || fail "未能读取应用私有 MCP token"
+
+    UNAUTHORIZED=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pagekit-smoke","version":"1"}}}' \
+        "$MCP_URL")
+    [ "$UNAUTHORIZED" = 401 ] || fail "无 token 请求应返回 401，实际 $UNAUTHORIZED"
+
+    FORBIDDEN=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H "Authorization: Bearer $TOKEN" -H 'Origin: https://attacker.example' \
+        -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pagekit-smoke","version":"1"}}}' \
+        "$MCP_URL")
+    [ "$FORBIDDEN" = 403 ] || fail "非回环 Origin 应返回 403，实际 $FORBIDDEN"
+
+    INIT=$(curl --noproxy '*' -sS -i -X POST \
+        -H "Authorization: Bearer $TOKEN" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pagekit-smoke","version":"1"}}}' \
+        "$MCP_URL" | tr -d '\r')
+    SESSION=$(printf '%s\n' "$INIT" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2; exit}')
+    [ -n "$SESSION" ] || fail "initialize 未返回 mcp-session-id"
+    printf '%s\n' "$INIT" | grep -q '"name":"pagekit"' || fail "initialize 响应缺少 PageKit serverInfo"
+
+    curl --noproxy '*' -sS -o /dev/null -X POST \
+        -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+        -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$MCP_URL"
+    TOOLS=$(curl --noproxy '*' -sS -X POST \
+        -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+        -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' "$MCP_URL")
+    printf '%s\n' "$TOOLS" | grep -q '"name":"webfetch"' || fail "tools/list 缺少 webfetch"
+    printf '%s\n' "$TOOLS" | grep -q '"name":"browser_snapshot"' || fail "tools/list 缺少 browser_snapshot"
+    $A shell dumpsys activity services "$PKG/.mcp.McpServerService" | grep -q McpServerService \
+        || fail "MCP 前台服务未运行"
+    echo "== MCP auth + Origin + initialize + tools/list + service lifecycle ✓ =="
+    ;;
 opentest)
     # 端到端：搜索 → 点进第一条结果 → 提取详情页
     # 用法: ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]
@@ -245,6 +304,6 @@ clean)
     "$GRADLE_CMD" clean --no-daemon
     ;;
 *)
-    fail "未知命令: $CMD（build|release|test|install|verify|clean）"
+    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|clean）"
     ;;
 esac

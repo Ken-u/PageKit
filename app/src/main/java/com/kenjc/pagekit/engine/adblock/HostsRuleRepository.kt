@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 interface HostsRuleRepository {
     fun snapshot(): HostsRuleSnapshot
@@ -16,6 +18,7 @@ class AssetHostsRuleRepository(
     private val context: Context,
     private val assetPath: String = DEFAULT_ASSET_PATH,
     private val sourceVersion: String = SOURCE_VERSION,
+    private val cacheFileName: String = CACHE_FILE_NAME,
 ) : HostsRuleRepository {
 
     private val current = AtomicReference(HostsRuleSnapshot.EMPTY)
@@ -24,7 +27,7 @@ class AssetHostsRuleRepository(
 
     fun start(scope: CoroutineScope) {
         scope.launch {
-            runCatching { load() }
+            runCatching { loadBestAvailable() }
                 .onSuccess {
                     current.set(it)
                     Log.i(TAG, "hosts loaded: ${it.blockedDomains.size} domains, ${it.sourceVersion}")
@@ -33,7 +36,25 @@ class AssetHostsRuleRepository(
         }
     }
 
-    private fun load(): HostsRuleSnapshot {
+    suspend fun reloadFromCache(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { loadCache() }
+            .onSuccess { current.set(it) }
+            .onFailure { Log.e(TAG, "hosts cache reload failed; keeping previous snapshot", it) }
+            .isSuccess
+    }
+
+    private fun loadBestAvailable(): HostsRuleSnapshot = runCatching { loadCache() }
+        .getOrElse { loadAsset() }
+
+    private fun loadCache(): HostsRuleSnapshot {
+        val file = context.filesDir.resolve("adblock/$cacheFileName")
+        require(file.isFile) { "hosts cache missing" }
+        val snapshot = HostsRuleParser.parse(file.bufferedReader().use { it.readText() }, "online-cache")
+        require(snapshot.blockedDomains.size >= MIN_HOST_RULES) { "hosts cache has too few rules" }
+        return snapshot
+    }
+
+    private fun loadAsset(): HostsRuleSnapshot {
         val text = context.assets.open(assetPath).use { raw ->
             GZIPInputStream(raw).bufferedReader().use { it.readText() }
         }
@@ -42,6 +63,8 @@ class AssetHostsRuleRepository(
 
     companion object {
         const val DEFAULT_ASSET_PATH = "adblock/stevenblack-hosts.dat"
+        const val CACHE_FILE_NAME = "stevenblack-hosts.txt"
+        const val MIN_HOST_RULES = 1_000
         const val SOURCE_VERSION = "StevenBlack/hosts@4731c9c341b13b9a4c8282a02eb551ab76090811"
         private const val TAG = "PageKit.AdBlock"
     }

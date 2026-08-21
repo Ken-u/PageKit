@@ -81,15 +81,29 @@ adb shell am start -n com.kenjc.pagekit/.MainActivity \
 
 ## MCP（V2）
 
-应用进程启动后在设备回环地址提供 Streamable HTTP：`http://127.0.0.1:3000/mcp`。
+打开应用后，通知栏可见的前台服务会在设备回环地址提供 Streamable HTTP：
+`http://127.0.0.1:3000/mcp`。服务只绑定回环地址，并要求应用首次启动时生成的
+256-bit Bearer token；浏览器客户端的 `Origin` 也必须是 localhost/回环地址。
 
 ```bash
-adb forward tcp:3000 tcp:3000
-npx -y @modelcontextprotocol/inspector --connect http://127.0.0.1:3000/mcp
+adb forward tcp:19300 tcp:3000
+TOKEN=$(adb shell 'run-as com.kenjc.pagekit cat files/mcp_token.txt' | tr -d '\r\n')
+
+# 一键验证 401/403、initialize、tools/list 和前台服务生命周期
+./build.sh mcptest
+
+# MCP Inspector 需要 Node.js >= 22.19；在 UI 的 Authentication 中填入 TOKEN
+npx -y @modelcontextprotocol/inspector --web \
+  --server-url http://127.0.0.1:19300/mcp --transport http \
+  --header "Authorization: Bearer $TOKEN"
 ```
 
 当前工具：`webfetch`、`websearch`、`browser_snapshot`、`browser_click`、
 `browser_type`、`browser_scroll`。`webfetch` 当前只接受 `mode=raw`。
+
+广告规则以 APK 内的固定快照作为永久兜底。WorkManager 在联网条件下每 7 天检查
+StevenBlack hosts、EasyList 和 EasyList China，使用 ETag/Last-Modified 条件请求；
+响应有 12 MiB 上限，须通过完整解析和最低规则数校验后才会原子写入私有缓存并热切换。
 
 ## V2 路线
 
