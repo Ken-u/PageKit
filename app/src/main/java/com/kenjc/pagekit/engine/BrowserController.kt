@@ -40,6 +40,19 @@ class BrowserController {
               if (/^https?:/i.test(href)) { location.assign(href); return ok('navigated:$eid'); }
               if (/^javascript:/i.test(href) || href.charAt(0) === '#') { el.click(); return ok('clicked-js:$eid'); }
             }
+            // 输入框自身被 click（脚本无独立按钮的兜底）：模拟回车提交
+            if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) {
+              function fireKey(type, key, keyCode) {
+                el.dispatchEvent(new KeyboardEvent(type, {bubbles:true, cancelable:true, key:key, code:'Enter', keyCode:keyCode, which:keyCode}));
+              }
+              fireKey('keydown', 'Enter', 13);
+              fireKey('keypress', 'Enter', 13);
+              el.dispatchEvent(new Event('submit', {bubbles:true}));
+              var f = el.closest('form');
+              if (f) { try { f.requestSubmit ? f.requestSubmit() : f.submit(); } catch(e){} }
+              fireKey('keyup', 'Enter', 13);
+              return ok('enter-submitted:$eid');
+            }
             function fire(type, Ctor) {
               try {
                 var r = el.getBoundingClientRect();
