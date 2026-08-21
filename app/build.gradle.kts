@@ -52,5 +52,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.flexmark.html2md)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.mcp.kotlin.server)
     testImplementation(libs.junit)
+    testImplementation(libs.mcp.kotlin.client)
+    testImplementation(libs.mcp.kotlin.testing)
 }

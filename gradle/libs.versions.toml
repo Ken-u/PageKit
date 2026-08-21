@@ -1,11 +1,13 @@
 [versions]
 agp = "8.7.3"
-kotlin = "2.0.21"
+kotlin = "2.4.0"
 composeBom = "2024.12.01"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
-coroutines = "1.9.0"
-serializationJson = "1.7.3"
+coroutines = "1.11.0"
+serializationJson = "1.11.0"
+ktor = "3.5.1"
+mcp = "0.15.0"
 
 flexmark = "0.64.8"
 
@@ -21,6 +23,10 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 flexmark-html2md = { group = "com.vladsch.flexmark", name = "flexmark-html2md-converter", version.ref = "flexmark" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }
+ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio", version.ref = "ktor" }
+mcp-kotlin-server = { group = "io.modelcontextprotocol", name = "kotlin-sdk-server", version.ref = "mcp" }
+mcp-kotlin-client = { group = "io.modelcontextprotocol", name = "kotlin-sdk-client", version.ref = "mcp" }
+mcp-kotlin-testing = { group = "io.modelcontextprotocol", name = "kotlin-sdk-testing", version.ref = "mcp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

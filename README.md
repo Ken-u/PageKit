@@ -79,6 +79,18 @@ adb shell am start -n com.kenjc.pagekit/.MainActivity \
 ./gradlew :app:testDebugUnitTest
 ```
 
+## MCP（V2）
+
+应用进程启动后在设备回环地址提供 Streamable HTTP：`http://127.0.0.1:3000/mcp`。
+
+```bash
+adb forward tcp:3000 tcp:3000
+npx -y @modelcontextprotocol/inspector --connect http://127.0.0.1:3000/mcp
+```
+
+当前工具：`webfetch`、`websearch`、`browser_snapshot`、`browser_click`、
+`browser_type`、`browser_scroll`。`webfetch` 当前只接受 `mode=raw`。
+
 ## V2 路线
 
 - LLM Compressor（OpenAI 兼容 / 端侧），Compact/Focus 模式语义压缩，`expand()` 章节缓存
