@@ -198,6 +198,8 @@ class WebPageLoader(
 
             else -> "https://$t"
         }
+        // 同步切换到 Loading，令 suspend API 可以无竞态地等待本次导航的终态。
+        state.value = LoadState.Loading(url)
         webView.loadUrl(url)
     }
 
