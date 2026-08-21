@@ -66,7 +66,7 @@ engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager �
 ./build.sh llmtest [serial] # compact/focus、确定性字段保真与 expand 闭环
 ./build.sh searchtest ["查询词"] ["https://www.bing.com"] [serial]  # 搜索结果页直航→提取（支持 baidu/bing/sogou/360/google）
 ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]   # 搜索→点进第一条真实结果→详情页提取
-./build.sh release          # release APK
+./build.sh release          # 使用本地固定 keystore 构建签名 release APK
 ./build.sh clean
 
 # 手动方式：需 JDK 17 + Android SDK（platform-35 / build-tools 35）；minSdk 28
@@ -83,16 +83,34 @@ PAGEKIT_VERSION=0.4.0
 ```
 
 版本采用 SemVer。Android `versionCode` 根据 `major * 1,000,000 + minor * 1,000 + patch`
-自动生成，不需要再手工同步。修改版本并推送到 `main` 后，
+自动生成，不需要再手工同步。修改版本并推送后，
 [Android CI](https://github.com/Ken-u/PageKit/actions/workflows/android.yml) 会自动：
 
 1. 使用 JDK 17 运行 JVM 单元测试；
 2. 编译可直接安装的 debug APK；
-3. 生成 SHA-256 校验文件；
-4. 将 `PageKit-v<version>-<commit>-debug.apk` 保存为 30 天的 Actions Artifact。
+3. 使用仓库 Secrets 中的固定私钥编译并校验签名 release APK；
+4. 为两种 APK 生成 SHA-256，并上传 Actions Artifact。
 
-Pull Request、手动触发和 `v*` tag 也会执行同一流程。tag 必须与版本严格一致，例如
-`PAGEKIT_VERSION=0.4.0` 对应 `v0.4.0`，不一致时 CI 会明确失败。
+Pull Request 不读取签名 Secrets，只验证单测和 debug 构建。普通 branch push 会额外保存 90 天的
+`PageKit-v<version>-<commit>-release.apk`；`v*` tag 构建成功后还会自动创建 GitHub Release，
+发布签名 APK 和 SHA-256。tag 必须与版本严格一致，例如 `PAGEKIT_VERSION=0.4.0` 对应
+`v0.4.0`，不一致时 CI 会明确失败。
+
+Release 签名使用以下 GitHub Actions Secrets，私钥和密码均不得提交到仓库：
+
+- `PAGEKIT_KEYSTORE_BASE64`
+- `PAGEKIT_KEYSTORE_PASSWORD`
+- `PAGEKIT_KEY_ALIAS`
+- `PAGEKIT_KEY_PASSWORD`
+
+本地 `./build.sh release` 默认读取已忽略的 `release/pagekit-release.jks` 和
+`release/.keystore-password`。这个 keystore 是后续 APK 更新的唯一身份，必须离线备份；丢失后
+无法再为已安装版本签发可升级 APK。
+
+当前 Release 证书 SHA-256：
+`2F:A5:2D:87:29:6F:2B:88:31:90:E1:37:89:D2:17:E9:F1:EE:F1:9B:18:34:82:86:60:B3:E2:B0:B1:98:9A:23`。
+早期 CI debug APK 使用不同证书，首次切换到 Release APK 需要卸载旧 debug 版本；之后签名
+固定，可直接覆盖升级。
 
 ## adb 验证通道
 

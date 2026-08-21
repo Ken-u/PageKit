@@ -4,7 +4,7 @@
 # 用法：
 #   ./build.sh              # 构建 debug APK（默认）
 #   ./build.sh build        # 同上
-#   ./build.sh release      # 构建 release APK
+#   ./build.sh release      # 使用本地固定 keystore 构建签名 release APK
 #   ./build.sh test         # JVM 单测
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
@@ -36,6 +36,34 @@ fi
 
 # ---- 前置检查 ----
 fail() { echo "✗ $1" >&2; exit 1; }
+
+configure_release_signing() {
+    local variables=(
+        PAGEKIT_KEYSTORE_PATH
+        PAGEKIT_KEYSTORE_PASSWORD
+        PAGEKIT_KEY_ALIAS
+        PAGEKIT_KEY_PASSWORD
+    )
+    local supplied=0 variable
+    for variable in "${variables[@]}"; do
+        [ -n "${!variable:-}" ] && supplied=$((supplied + 1))
+    done
+    if [ "$supplied" -eq 4 ]; then
+        return
+    fi
+    [ "$supplied" -eq 0 ] || fail "Release 签名环境变量不完整"
+
+    local keystore="$PWD/release/pagekit-release.jks"
+    local password_file="$PWD/release/.keystore-password"
+    [ -f "$keystore" ] || fail "未找到本地 Release keystore：$keystore"
+    [ -f "$password_file" ] || fail "未找到本地 Release 密码文件：$password_file"
+
+    export PAGEKIT_KEYSTORE_PATH="$keystore"
+    PAGEKIT_KEYSTORE_PASSWORD="$(tr -d '\r\n' < "$password_file")"
+    export PAGEKIT_KEYSTORE_PASSWORD
+    export PAGEKIT_KEY_ALIAS="pagekit-release"
+    export PAGEKIT_KEY_PASSWORD="$PAGEKIT_KEYSTORE_PASSWORD"
+}
 
 [ -d "$JAVA_HOME" ] || fail "未找到 JDK17：$JAVA_HOME
   安装：mkdir -p ~/.sdk && tar -xzf jdk17.tar.gz -C ~/.sdk && mv ~/.sdk/jdk-17.* ~/.sdk/jdk-17"
@@ -96,8 +124,9 @@ build)
     echo "✓ APK: app/build/outputs/apk/debug/app-debug.apk"
     ;;
 release)
+    configure_release_signing
     "$GRADLE_CMD" :app:assembleRelease --no-daemon
-    echo "✓ APK: app/build/outputs/apk/release/app-release-unsigned.apk"
+    echo "✓ 签名 APK: app/build/outputs/apk/release/app-release.apk"
     ;;
 test)
     "$GRADLE_CMD" :app:testDebugUnitTest --no-daemon

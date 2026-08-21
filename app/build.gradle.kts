@@ -14,6 +14,32 @@ fun semVerToVersionCode(versionName: String): Int {
 }
 
 val pageKitVersion = providers.gradleProperty("PAGEKIT_VERSION").get()
+val releaseKeystorePath = providers.environmentVariable("PAGEKIT_KEYSTORE_PATH").orNull
+val releaseKeystorePassword = providers.environmentVariable("PAGEKIT_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("PAGEKIT_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("PAGEKIT_KEY_PASSWORD").orNull
+val releaseSigningValues = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val releaseSigningConfigured = releaseSigningValues.all { !it.isNullOrBlank() }
+require(releaseSigningValues.all { it.isNullOrBlank() } || releaseSigningConfigured) {
+    "Release signing environment is incomplete; set all PAGEKIT_KEYSTORE_* / PAGEKIT_KEY_* variables"
+}
+val releaseTaskRequested = gradle.startParameter.taskNames.any { task ->
+    val name = task.substringAfterLast(':')
+    name.contains("release", ignoreCase = true) || name in setOf("assemble", "build", "bundle")
+}
+if (releaseTaskRequested) {
+    require(releaseSigningConfigured) {
+        "Release signing is required; use ./build.sh release or provide PAGEKIT_KEYSTORE_* / PAGEKIT_KEY_*"
+    }
+    require(rootProject.file(requireNotNull(releaseKeystorePath)).isFile) {
+        "Release keystore does not exist: $releaseKeystorePath"
+    }
+}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -34,8 +60,22 @@ android {
         versionName = pageKitVersion
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = rootProject.file(requireNotNull(releaseKeystorePath))
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

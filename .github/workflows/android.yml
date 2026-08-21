@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
     branches: [main]
@@ -20,6 +20,9 @@ jobs:
     name: Test and build APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.name }}
+      release_artifact: ${{ steps.version.outputs.release_artifact }}
 
     steps:
       - name: Check out source
@@ -51,7 +54,9 @@ jobs:
             exit 1
           fi
           echo "name=$version" >> "$GITHUB_OUTPUT"
-          echo "apk=PageKit-v${version}-${GITHUB_SHA::7}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "debug_apk=PageKit-v${version}-${GITHUB_SHA::7}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "release_apk=PageKit-v${version}-${GITHUB_SHA::7}-release.apk" >> "$GITHUB_OUTPUT"
+          echo "release_artifact=PageKit-v${version}-release" >> "$GITHUB_OUTPUT"
 
       - name: Run unit tests and build debug APK
         run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
@@ -60,8 +65,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/${{ steps.version.outputs.apk }}"
-          sha256sum "dist/${{ steps.version.outputs.apk }}" > "dist/${{ steps.version.outputs.apk }}.sha256"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/${{ steps.version.outputs.debug_apk }}"
+          sha256sum "dist/${{ steps.version.outputs.debug_apk }}" > "dist/${{ steps.version.outputs.debug_apk }}.sha256"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
@@ -70,3 +75,86 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Decode release keystore
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          PAGEKIT_KEYSTORE_BASE64: ${{ secrets.PAGEKIT_KEYSTORE_BASE64 }}
+          PAGEKIT_KEYSTORE_PASSWORD: ${{ secrets.PAGEKIT_KEYSTORE_PASSWORD }}
+          PAGEKIT_KEY_ALIAS: ${{ secrets.PAGEKIT_KEY_ALIAS }}
+          PAGEKIT_KEY_PASSWORD: ${{ secrets.PAGEKIT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in \
+            "$PAGEKIT_KEYSTORE_BASE64" \
+            "$PAGEKIT_KEYSTORE_PASSWORD" \
+            "$PAGEKIT_KEY_ALIAS" \
+            "$PAGEKIT_KEY_PASSWORD"; do
+            if [[ -z "$value" ]]; then
+              echo "Release signing secrets are not configured" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$PAGEKIT_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pagekit-release.jks"
+          chmod 600 "$RUNNER_TEMP/pagekit-release.jks"
+
+      - name: Build signed release APK
+        if: github.event_name != 'pull_request'
+        env:
+          PAGEKIT_KEYSTORE_PATH: ${{ runner.temp }}/pagekit-release.jks
+          PAGEKIT_KEYSTORE_PASSWORD: ${{ secrets.PAGEKIT_KEYSTORE_PASSWORD }}
+          PAGEKIT_KEY_ALIAS: ${{ secrets.PAGEKIT_KEY_ALIAS }}
+          PAGEKIT_KEY_PASSWORD: ${{ secrets.PAGEKIT_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify and stage release APK
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+          mkdir -p dist-release
+          cp app/build/outputs/apk/release/app-release.apk "dist-release/${{ steps.version.outputs.release_apk }}"
+          sha256sum "dist-release/${{ steps.version.outputs.release_apk }}" > "dist-release/${{ steps.version.outputs.release_apk }}.sha256"
+
+      - name: Upload signed release artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.release_artifact }}
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed release APK
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.release_artifact }}
+          path: dist
+
+      - name: Publish release and assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "PageKit ${{ needs.build.outputs.version }}" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
