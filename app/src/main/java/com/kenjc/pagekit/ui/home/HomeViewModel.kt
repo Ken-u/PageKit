@@ -7,6 +7,7 @@ import com.kenjc.pagekit.engine.BrowserController
 import com.kenjc.pagekit.engine.ContentExtractor
 import com.kenjc.pagekit.engine.HtmlToMarkdown
 import com.kenjc.pagekit.engine.LoadState
+import com.kenjc.pagekit.engine.SearchEngine
 import com.kenjc.pagekit.engine.StructuredAssembler
 import com.kenjc.pagekit.engine.WebPageLoader
 import com.kenjc.pagekit.compress.PromptBuilder
@@ -105,6 +106,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     loader.loadUrl(it)
                     """{"ok":true,"result":"navigating:$it"}"""
                 } ?: errOp("missing url")
+                // 搜索：引擎结果页直航 + 自动提取（op=search --es text 词 [--es intent 引擎名]）
+                "search" -> {
+                    val q = text
+                    if (q.isNullOrBlank()) {
+                        errOp("missing query")
+                    } else {
+                        searchOp(q, focusIntent?.takeIf { it.isNotBlank() })
+                        """{"ok":true,"result":"search-started"}"""
+                    }
+                }
                 // 诊断：元素 outerHTML
                 "inspect" -> eid?.let { controller.inspect(wv, it) } ?: errOp("missing eid")
                 // 诊断：form submit hook（click 前调用，title 变 PK_FORM_SUBMIT_n 说明提交被触发）
@@ -130,6 +141,36 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 getApplication<Application>().filesDir.resolve("control_result.txt").writeText(result)
             }.onFailure { android.util.Log.e("PageKit", "control result save failed", it) }
+        }
+    }
+
+    /**
+     * 搜索（websearch 工具前身）：引擎结果页直航 + 提取
+     * op=search --es query "词" [--es engine bing]
+     */
+    fun searchOp(query: String, engine: String?) {
+        viewModelScope.launch {
+            val engineName = engine?.let { SearchEngine.resolve(it) } ?: SearchEngine.DEFAULT
+            val resultUrl = SearchEngine.buildResultUrl(engineName, query)
+            if (resultUrl == null) {
+                writeControlResult("""{"ok":false,"error":"unknown-engine:$engineName"}""")
+                return@launch
+            }
+            loader.loadUrl(resultUrl)
+            android.util.Log.i("PageKit", "webSearch: engine=$engineName url=$resultUrl")
+            // 等待页面就绪后自动提取一次
+            loader.state.collect { state ->
+                if (state is LoadState.Ready) {
+                    extract()
+                    return@collect
+                }
+            }
+        }
+    }
+
+    private fun writeControlResult(result: String) {
+        runCatching {
+            getApplication<Application>().filesDir.resolve("control_result.txt").writeText(result)
         }
     }
 

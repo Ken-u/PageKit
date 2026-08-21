@@ -2,6 +2,7 @@ package com.kenjc.pagekit.api
 
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.engine.SearchEngine
 
 /**
  * PageKit 对外门面（PLAN.md：UI 与未来 MCP server 共用的契约层）。
@@ -17,6 +18,9 @@ interface PageKitApi {
 
     /** 列举当前页面可交互元素（M5 实现） */
     suspend fun listInteractiveElements(): List<String>
+
+    /** 搜索：拼接引擎结果页 URL 并导航（对应 MCP websearch 工具；engine 见 SearchEngine.names） */
+    suspend fun webSearch(query: String, engine: String = SearchEngine.DEFAULT): CompressedPage
 
     /** 浏览器控制（M5 实现） */
     suspend fun click(elementId: String): Boolean
