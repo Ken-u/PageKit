@@ -9,6 +9,7 @@ import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
+import com.kenjc.pagekit.session.SingleSessionGateway
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.testing.ChannelTransport
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
@@ -28,7 +29,7 @@ class PageKitMcpServerTest {
     fun `官方 MCP client 可发现并调用 PageKit tools`() = runBlocking {
         val runtime = FakeRuntime()
         val settings = FakeSettings()
-        val server = PageKitMcpTools(DefaultPageKitApi(runtime), settings).createServer()
+        val server = PageKitMcpTools(SingleSessionGateway(DefaultPageKitApi(runtime)), settings).createServer()
         val transports = ChannelTransport.createLinkedPair()
         server.createSession(transports.serverTransport)
         val client = Client(Implementation(name = "pagekit-test", version = "1"))
@@ -38,7 +39,8 @@ class PageKitMcpServerTest {
         assertEquals(
             setOf(
                 "webfetch", "websearch", "expand", "browser_snapshot", "browser_click", "browser_type",
-                "browser_scroll", "llm_status", "llm_configure",
+                "browser_scroll", "llm_status", "llm_configure", "profile_create", "profile_list",
+                "profile_delete", "session_create", "session_list", "session_close",
             ),
             names,
         )
@@ -46,6 +48,21 @@ class PageKitMcpServerTest {
         val snapshot = client.callTool("browser_snapshot", emptyMap())
         assertFalse(snapshot.isError == true)
         assertNotNull(snapshot.structuredContent?.get("elements"))
+
+        val profiles = client.callTool("profile_list", emptyMap())
+        assertFalse(profiles.isError == true)
+        assertEquals(
+            "default",
+            profiles.structuredContent?.get("profiles")?.jsonArray?.single()?.jsonObject
+                ?.get("profileId")?.jsonPrimitive?.content,
+        )
+        val sessions = client.callTool("session_list", emptyMap())
+        assertFalse(sessions.isError == true)
+        assertEquals(
+            "default",
+            sessions.structuredContent?.get("sessions")?.jsonArray?.single()?.jsonObject
+                ?.get("sessionId")?.jsonPrimitive?.content,
+        )
 
         val fetch = client.callTool(
             name = "webfetch",
@@ -121,6 +138,7 @@ class PageKitMcpServerTest {
         override suspend fun title(): String = ok()
         override suspend fun inspect(elementId: String): String = ok()
         override suspend fun armSubmitHook(): String = ok()
+        override suspend fun currentUrl(): String = lastRequest?.url.orEmpty()
 
         private fun ok() = """{"ok":true}"""
     }

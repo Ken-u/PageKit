@@ -39,6 +39,20 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-visible localhost MCP endpoint for controlling PageKit WebView extraction from developer tools" />
         </service>
+
+        <!-- 固定进程槽确保每个 Profile 在首个 WebView 创建前绑定独立 dataDirectorySuffix。 -->
+        <service
+            android:name=".profile.ProfileWorkerService1"
+            android:exported="false"
+            android:process=":profile1" />
+        <service
+            android:name=".profile.ProfileWorkerService2"
+            android:exported="false"
+            android:process=":profile2" />
+        <service
+            android:name=".profile.ProfileWorkerService3"
+            android:exported="false"
+            android:process=":profile3" />
     </application>
 
 </manifest>

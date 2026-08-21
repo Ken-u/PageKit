@@ -1,13 +1,14 @@
 package com.kenjc.pagekit.mcp
 
-import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.compress.LlmConfig
 import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.provider.KimiWebSearchAdapter
-import com.kenjc.pagekit.provider.PageKitWebSearchProvider
-import com.kenjc.pagekit.provider.WebSearchProvider
+import com.kenjc.pagekit.provider.SessionWebSearchProvider
 import com.kenjc.pagekit.provider.WebSearchRequest
+import com.kenjc.pagekit.session.DEFAULT_PROFILE_ID
+import com.kenjc.pagekit.session.DEFAULT_SESSION_ID
+import com.kenjc.pagekit.session.PageKitSessionGateway
 import android.util.Log
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -50,23 +51,106 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-/** PageKitApi 到 MCP tools 的协议薄适配层。 */
+/** Session/Profile gateway 到 MCP tools 的协议适配层。 */
 class PageKitMcpTools(
-    private val api: DefaultPageKitApi,
+    private val gateway: PageKitSessionGateway,
     private val llmSettings: LlmSettings,
-    private val webSearchProvider: WebSearchProvider = PageKitWebSearchProvider(api),
 ) {
     private val json = Json { encodeDefaults = false }
 
     fun createServer(): Server = Server(
-        serverInfo = Implementation(name = "pagekit", version = "0.3.0"),
+        serverInfo = Implementation(name = "pagekit", version = "0.4.0"),
         options = ServerOptions(
             capabilities = ServerCapabilities(
                 tools = ServerCapabilities.Tools(listChanged = false),
             ),
         ),
-        instructions = "Render pages in Android WebView, remove ads/noise, optionally compress with an LLM, and expand cached original sections.",
+        instructions = "Create isolated browser sessions and multi-process profiles, render pages in Android WebView, remove ads/noise, and extract structured content.",
     ).apply {
+        addTool(
+            name = "profile_create",
+            description = "Create or open an isolated WebView profile in a dedicated Android process (maximum 3).",
+            inputSchema = schema(
+                "profile_id" to stringProperty("Stable profile ID: letters, digits, dot, underscore, dash"),
+                required = listOf("profile_id"),
+            ),
+        ) { request ->
+            toolResult {
+                buildJsonObject {
+                    put("profile", json.encodeToJsonElement(gateway.createProfile(request.arguments.requiredString("profile_id"))))
+                }
+            }
+        }
+
+        addTool(
+            name = "profile_list",
+            description = "List the default profile and all isolated process profiles.",
+            inputSchema = schema(),
+        ) {
+            toolResult { buildJsonObject { put("profiles", json.encodeToJsonElement(gateway.listProfiles())) } }
+        }
+
+        addTool(
+            name = "profile_delete",
+            description = "Close all sessions and permanently clear cookies, storage, cache, and extracted-page cache for an isolated profile.",
+            inputSchema = schema(
+                "profile_id" to stringProperty("Isolated profile ID to delete"),
+                required = listOf("profile_id"),
+            ),
+        ) { request ->
+            toolResult {
+                val deleted = gateway.deleteProfile(request.arguments.requiredString("profile_id"))
+                require(deleted) { "profile not found" }
+                buildJsonObject { put("deleted", true) }
+            }
+        }
+
+        addTool(
+            name = "session_create",
+            description = "Create an independent WebView session inside a profile.",
+            inputSchema = schema(
+                "profile_id" to stringProperty("Profile ID; defaults to the shared main-process profile"),
+            ),
+        ) { request ->
+            toolResult {
+                buildJsonObject {
+                    put(
+                        "session",
+                        json.encodeToJsonElement(
+                            gateway.createSession(request.arguments.string("profile_id") ?: DEFAULT_PROFILE_ID),
+                        ),
+                    )
+                }
+            }
+        }
+
+        addTool(
+            name = "session_list",
+            description = "List browser sessions, optionally filtered by profile.",
+            inputSchema = schema("profile_id" to stringProperty("Optional profile ID")),
+        ) { request ->
+            toolResult {
+                buildJsonObject {
+                    put("sessions", json.encodeToJsonElement(gateway.listSessions(request.arguments.string("profile_id"))))
+                }
+            }
+        }
+
+        addTool(
+            name = "session_close",
+            description = "Destroy a non-default WebView session and release its renderer resources.",
+            inputSchema = schema(
+                "session_id" to stringProperty("Session ID returned by session_create"),
+                required = listOf("session_id"),
+            ),
+        ) { request ->
+            toolResult {
+                val closed = gateway.closeSession(request.arguments.requiredString("session_id"))
+                require(closed) { "session not found" }
+                buildJsonObject { put("closed", true) }
+            }
+        }
+
         addTool(
             name = "webfetch",
             description = "Render and extract an HTTP(S) page in raw, compact, or intent-focused mode.",
@@ -74,6 +158,7 @@ class PageKitMcpTools(
                 "url" to stringProperty("HTTP(S) URL"),
                 "intent" to stringProperty("Optional extraction intent"),
                 "mode" to stringProperty("Extraction mode", enum = listOf("raw", "compact", "focus")),
+                "session_id" to sessionProperty(),
                 required = listOf("url"),
             ),
         ) { request ->
@@ -82,8 +167,9 @@ class PageKitMcpTools(
                 validateRemoteUrl(url)
                 val mode = request.arguments.string("mode") ?: "raw"
                 validateMode(mode, request.arguments.string("intent"))
-                val result = api.fetchDetailed(
-                    FetchRequest(
+                val result = gateway.fetch(
+                    sessionId = request.arguments.sessionId(),
+                    request = FetchRequest(
                         url = url,
                         intent = request.arguments.string("intent"),
                         mode = mode,
@@ -108,12 +194,13 @@ class PageKitMcpTools(
                 "engine" to stringProperty("Search engine", enum = listOf("bing", "baidu", "sogou", "360", "google")),
                 "limit" to integerProperty("Number of results (1-20)", default = 5),
                 "include_content" to booleanProperty("Render result pages and include Markdown content", default = false),
+                "session_id" to sessionProperty(),
                 required = listOf("query"),
             ),
         ) { request ->
             toolResult {
                 val startedAt = System.currentTimeMillis()
-                val result = webSearchProvider.search(
+                val result = SessionWebSearchProvider(gateway, request.arguments.sessionId()).search(
                     WebSearchRequest(
                         query = request.arguments.requiredString("query"),
                         engine = request.arguments.string("engine") ?: "bing",
@@ -135,12 +222,14 @@ class PageKitMcpTools(
             inputSchema = schema(
                 "section" to stringProperty("Section ID (such as s2) or heading"),
                 "page_id" to stringProperty("Optional page_id; defaults to the latest fetched page"),
+                "session_id" to sessionProperty(),
                 required = listOf("section"),
             ),
         ) { request ->
             toolResult {
                 json.encodeToJsonElement(
-                    api.expand(
+                    gateway.expand(
+                        sessionId = request.arguments.sessionId(),
                         section = request.arguments.requiredString("section"),
                         pageId = request.arguments.string("page_id"),
                     ),
@@ -151,11 +240,13 @@ class PageKitMcpTools(
         addTool(
             name = "browser_snapshot",
             description = "List visible interactive elements on the current page with stable [eN] IDs.",
-            inputSchema = schema(),
-        ) {
+            inputSchema = schema("session_id" to sessionProperty()),
+        ) { request ->
             toolResult {
                 buildJsonObject {
-                    put("elements", buildJsonArray { api.listInteractiveElements().forEach { add(JsonPrimitive(it)) } })
+                    put("elements", buildJsonArray {
+                        gateway.snapshot(request.arguments.sessionId()).forEach { add(JsonPrimitive(it)) }
+                    })
                 }
             }
         }
@@ -165,10 +256,13 @@ class PageKitMcpTools(
             description = "Click an interactive element returned by browser_snapshot.",
             inputSchema = schema(
                 "element_id" to stringProperty("Element ID such as e3"),
+                "session_id" to sessionProperty(),
                 required = listOf("element_id"),
             ),
         ) { request ->
-            booleanResult { api.click(request.arguments.requiredString("element_id")) }
+            booleanResult {
+                gateway.click(request.arguments.sessionId(), request.arguments.requiredString("element_id"))
+            }
         }
 
         addTool(
@@ -177,11 +271,13 @@ class PageKitMcpTools(
             inputSchema = schema(
                 "element_id" to stringProperty("Element ID such as e3"),
                 "text" to stringProperty("Text to enter"),
+                "session_id" to sessionProperty(),
                 required = listOf("element_id", "text"),
             ),
         ) { request ->
             booleanResult {
-                api.type(
+                gateway.type(
+                    request.arguments.sessionId(),
                     request.arguments.requiredString("element_id"),
                     request.arguments.requiredString("text"),
                 )
@@ -194,10 +290,12 @@ class PageKitMcpTools(
             inputSchema = schema(
                 "dx" to integerProperty("Horizontal delta", default = 0),
                 "dy" to integerProperty("Vertical delta", default = 600),
+                "session_id" to sessionProperty(),
             ),
         ) { request ->
             booleanResult {
-                api.scroll(
+                gateway.scroll(
+                    sessionId = request.arguments.sessionId(),
                     dx = request.arguments.int("dx") ?: 0,
                     dy = request.arguments.int("dy") ?: 600,
                 )
@@ -315,6 +413,8 @@ class PageKitMcpTools(
         put("default", default)
     }
 
+    private fun sessionProperty() = stringProperty("Browser session ID; defaults to the visible UI session")
+
     private fun JsonObject?.string(name: String): String? {
         val value = this?.get(name)?.jsonPrimitive?.content?.trim()?.takeIf(String::isNotEmpty)
         return value
@@ -328,12 +428,14 @@ class PageKitMcpTools(
 
     private fun JsonObject?.int(name: String): Int? = this?.get(name)?.jsonPrimitive?.intOrNull
     private fun JsonObject?.boolean(name: String): Boolean? = this?.get(name)?.jsonPrimitive?.booleanOrNull
+    private fun JsonObject?.sessionId(): String = string("session_id") ?: DEFAULT_SESSION_ID
 }
 
 /** 仅绑定设备回环地址的 Streamable HTTP server，由前台 Service 持有生命周期。 */
 class PageKitMcpServerController(
     private val tools: PageKitMcpTools,
     private val kimiWebSearchAdapter: KimiWebSearchAdapter,
+    private val sessionGateway: PageKitSessionGateway,
     private val accessPolicy: McpAccessPolicy,
     private val host: String = "127.0.0.1",
     private val port: Int = 3000,
@@ -374,9 +476,18 @@ class PageKitMcpServerController(
                         mcpStreamableHttp(path = "/mcp") { mcpServer }
                         routing {
                             post("/v1/search") {
+                                val requestedSession = call.request.header(SESSION_HEADER)?.trim()?.takeIf(String::isNotEmpty)
+                                var ephemeralSession: String? = null
                                 try {
+                                    val sessionId = requestedSession ?: sessionGateway.createSession(
+                                        call.request.header(PROFILE_HEADER)?.trim()?.takeIf(String::isNotEmpty)
+                                            ?: DEFAULT_PROFILE_ID,
+                                    ).sessionId.also { ephemeralSession = it }
                                     call.respondText(
-                                        text = kimiWebSearchAdapter.handle(call.receiveText()),
+                                        text = kimiWebSearchAdapter.handle(
+                                            requestBody = call.receiveText(),
+                                            scopedProvider = SessionWebSearchProvider(sessionGateway, sessionId),
+                                        ),
                                         contentType = ContentType.Application.Json,
                                     )
                                 } catch (error: IllegalArgumentException) {
@@ -390,6 +501,8 @@ class PageKitMcpServerController(
                                         text = error.message ?: "Search failed",
                                         status = HttpStatusCode.InternalServerError,
                                     )
+                                } finally {
+                                    ephemeralSession?.let { runCatching { sessionGateway.closeSession(it) } }
                                 }
                             }
                         }
@@ -429,5 +542,7 @@ class PageKitMcpServerController(
     private companion object {
         const val TAG = "PageKit.MCP"
         val PROTECTED_PATHS = setOf("/mcp", "/v1/search")
+        const val SESSION_HEADER = "X-PageKit-Session"
+        const val PROFILE_HEADER = "X-PageKit-Profile"
     }
 }

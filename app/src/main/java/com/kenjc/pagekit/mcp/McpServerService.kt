@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 
 /** 用户可见且可停止的 localhost MCP 服务生命周期。 */
 class McpServerService : Service() {
@@ -35,7 +36,9 @@ class McpServerService : Service() {
     }
 
     override fun onDestroy() {
-        (application as PageKitApp).mcpServer.stop()
+        val app = application as PageKitApp
+        app.mcpServer.stop()
+        runBlocking { app.sessionGateway.close() }
         serviceScope.cancel()
         super.onDestroy()
     }

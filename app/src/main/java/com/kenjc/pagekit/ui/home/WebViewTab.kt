@@ -7,7 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * 「网页」Tab：承载共享 WebView 实例。
+ * 「网页」Tab：承载 default Session 的 WebView 实例。
  * 实例生命周期由 HomeViewModel/WebPageLoader 管理，切 Tab 仅做 attach/detach。
  */
 @Composable

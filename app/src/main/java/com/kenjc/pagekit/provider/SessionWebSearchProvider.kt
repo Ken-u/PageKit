@@ -1,29 +1,25 @@
 package com.kenjc.pagekit.provider
 
-import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.session.PageKitSessionGateway
 
-/** 使用所绑定 PageKit API 的 WebView、Profile Cookie、广告规则和正文提取管线实现搜索。 */
-class PageKitWebSearchProvider(
-    private val api: DefaultPageKitApi,
+/** 将统一 WebSearchProvider 绑定到一个明确的浏览器 Session。 */
+class SessionWebSearchProvider(
+    private val gateway: PageKitSessionGateway,
+    private val sessionId: String,
     private val maxContentChars: Int = 40_000,
 ) : WebSearchProvider {
-
     init {
         require(maxContentChars > 0) { "maxContentChars must be positive" }
     }
 
     override suspend fun search(request: WebSearchRequest): WebSearchResponse {
         val valid = request.validated()
-        val hits = api.searchResults(
-            query = valid.query.trim(),
-            engine = valid.engine,
-            limit = valid.limit,
-        )
+        val hits = gateway.search(sessionId, valid.query.trim(), valid.engine, valid.limit)
         val results = hits.map { hit ->
             val content = if (valid.includeContent) {
                 runCatching {
-                    api.fetchDetailed(FetchRequest(url = hit.url, mode = "raw"))
+                    gateway.fetch(sessionId, FetchRequest(hit.url, mode = "raw"))
                         .markdown
                         .take(maxContentChars)
                 }.getOrDefault("")
@@ -41,6 +37,6 @@ class PageKitWebSearchProvider(
                 mime = hit.mime,
             )
         }
-        return WebSearchResponse(query = valid.query.trim(), results = results)
+        return WebSearchResponse(valid.query.trim(), results)
     }
 }

@@ -10,6 +10,7 @@
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
+#   ./build.sh sessiontest [serial]  # 多 WebView Session + 多进程 Profile 隔离验证
 #   ./build.sh llmtest [serial]   # 实机 compact/focus + expand 闭环（本地假 OpenAI 端点）
 #   ./build.sh clean
 #
@@ -235,6 +236,123 @@ print("first result:", results[0]["title"], results[0]["url"])
 '
     echo "== Bearer auth + Origin + Kimi SearchWeb request/response contract ✓ =="
     ;;
+sessiontest)
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+    HOST_PORT="${PAGEKIT_MCP_PORT:-19300}"
+    FIXTURE_PORT="${PAGEKIT_SESSION_FIXTURE_PORT:-$((24000 + $$ % 8000))}"
+    MCP_URL="http://127.0.0.1:${HOST_PORT}/mcp"
+    PROFILE_A="itest_alpha"
+    PROFILE_B="itest_beta"
+    SESSION_TEST_READY=0
+
+    python3 scripts/fake_session_server.py "$FIXTURE_PORT" &
+    FIXTURE_PID=$!
+    cleanup_sessiontest() {
+        if [ "$SESSION_TEST_READY" = 1 ]; then
+            mcp_call 90 profile_delete "{\"profile_id\":\"$PROFILE_A\"}" >/dev/null 2>&1 || true
+            mcp_call 91 profile_delete "{\"profile_id\":\"$PROFILE_B\"}" >/dev/null 2>&1 || true
+        fi
+        kill "$FIXTURE_PID" >/dev/null 2>&1 || true
+        wait "$FIXTURE_PID" >/dev/null 2>&1 || true
+    }
+    trap cleanup_sessiontest EXIT
+    sleep 1
+    kill -0 "$FIXTURE_PID" >/dev/null 2>&1 || fail "session fixture 启动失败（端口 $FIXTURE_PORT）"
+
+    echo "== 设备: $DEV_ADDR | multi-session + isolated profiles =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    $A shell am start -W -n "$PKG/.MainActivity" >/dev/null
+    sleep 3
+    $A forward --remove "tcp:${HOST_PORT}" >/dev/null 2>&1 || true
+    $A forward "tcp:${HOST_PORT}" tcp:3000 >/dev/null
+    $A reverse --remove "tcp:${FIXTURE_PORT}" >/dev/null 2>&1 || true
+    $A reverse "tcp:${FIXTURE_PORT}" "tcp:${FIXTURE_PORT}" >/dev/null
+    TOKEN=$($A shell "run-as $PKG cat files/mcp_token.txt" | tr -d '\r\n')
+
+    INIT=$(curl --noproxy '*' -sS -i -X POST \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pagekit-session-smoke","version":"1"}}}' \
+        "$MCP_URL" | tr -d '\r')
+    SESSION=$(printf '%s\n' "$INIT" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2; exit}')
+    [ -n "$SESSION" ] || fail "sessiontest initialize 未返回 MCP session"
+    curl --noproxy '*' -sS -o /dev/null -X POST \
+        -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+        -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$MCP_URL"
+
+    mcp_call() {
+        local id="$1" name="$2" arguments="$3"
+        curl --noproxy '*' --max-time 90 -sS -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SESSION" \
+            -H 'MCP-Protocol-Version: 2025-06-18' -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"tools/call\",\"params\":{\"name\":\"$name\",\"arguments\":$arguments}}" \
+            "$MCP_URL"
+    }
+    structured() {
+        python3 -c 'import json,sys
+s=sys.stdin.read(); data=[x[6:] for x in s.splitlines() if x.startswith("data: ")]
+o=json.loads(data[-1] if data else s)
+r=o["result"]
+assert not r.get("isError", False), r
+print(json.dumps(r["structuredContent"], ensure_ascii=False))'
+    }
+    session_id() { python3 -c 'import json,sys; print(json.load(sys.stdin)["session"]["sessionId"])'; }
+
+    # 清理由上次中断遗留的测试 Profile；绝不触碰其他 Profile。
+    mcp_call 2 profile_delete "{\"profile_id\":\"$PROFILE_A\"}" >/dev/null 2>&1 || true
+    mcp_call 3 profile_delete "{\"profile_id\":\"$PROFILE_B\"}" >/dev/null 2>&1 || true
+    mcp_call 4 profile_create "{\"profile_id\":\"$PROFILE_A\"}" | structured >/dev/null
+    mcp_call 5 profile_create "{\"profile_id\":\"$PROFILE_B\"}" | structured >/dev/null
+    SESSION_TEST_READY=1
+
+    S0A=$(mcp_call 6 session_create '{"profile_id":"default"}' | structured | session_id)
+    S0B=$(mcp_call 7 session_create '{"profile_id":"default"}' | structured | session_id)
+    SAA=$(mcp_call 8 session_create "{\"profile_id\":\"$PROFILE_A\"}" | structured | session_id)
+    SAB=$(mcp_call 9 session_create "{\"profile_id\":\"$PROFILE_A\"}" | structured | session_id)
+    SBB=$(mcp_call 10 session_create "{\"profile_id\":\"$PROFILE_B\"}" | structured | session_id)
+
+    mcp_call 11 webfetch "{\"session_id\":\"$S0A\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=A\",\"mode\":\"raw\"}" | structured | grep -q 'SESSION_A' \
+        || fail "Session A 页面加载失败"
+    mcp_call 12 webfetch "{\"session_id\":\"$S0B\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=B\",\"mode\":\"raw\"}" | structured | grep -q 'SESSION_B' \
+        || fail "Session B 页面加载失败"
+    mcp_call 13 browser_snapshot "{\"session_id\":\"$S0A\"}" | structured | grep -q 'BUTTON_A' \
+        || fail "Session A DOM 被其他 Session 覆盖"
+    mcp_call 14 browser_snapshot "{\"session_id\":\"$S0B\"}" | structured | grep -q 'BUTTON_B' \
+        || fail "Session B DOM 被其他 Session 覆盖"
+
+    mcp_call 15 webfetch "{\"session_id\":\"$SAA\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=ALPHA_SET&cookie=PROFILE_ALPHA\",\"mode\":\"raw\"}" | structured >/dev/null
+    mcp_call 16 webfetch "{\"session_id\":\"$SAB\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=ALPHA_READ\",\"mode\":\"raw\"}" | structured | grep -q 'pagekit_profile=PROFILE_ALPHA' \
+        || fail "同 Profile 的不同 Session 未共享 Profile Cookie"
+    BETA=$(mcp_call 17 webfetch "{\"session_id\":\"$SBB\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=BETA_READ\",\"mode\":\"raw\"}" | structured)
+    if printf '%s' "$BETA" | grep -q 'PROFILE_ALPHA'; then
+        fail "Profile B 泄漏了 Profile A Cookie"
+    fi
+
+    PROFILE_PROCESSES=$($A shell ps -A | grep -c "${PKG}:profile" || true)
+    [ "$PROFILE_PROCESSES" -ge 2 ] || fail "未观察到两个独立 Profile worker 进程"
+    PROFILE_DIRS=$($A shell "run-as $PKG sh -c 'ls -d app_webview_pagekit_profile_* 2>/dev/null | wc -l'" | tr -d '\r')
+    [ "$PROFILE_DIRS" -ge 2 ] || fail "未生成独立 WebView data-directory suffix"
+
+    mcp_call 18 profile_delete "{\"profile_id\":\"$PROFILE_A\"}" | structured | grep -q '"deleted": true' \
+        || fail "Profile A 删除失败"
+    mcp_call 19 profile_create "{\"profile_id\":\"$PROFILE_A\"}" | structured >/dev/null
+    SAC=$(mcp_call 20 session_create "{\"profile_id\":\"$PROFILE_A\"}" | structured | session_id)
+    RESET_READ=$(mcp_call 21 webfetch "{\"session_id\":\"$SAC\",\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/?name=ALPHA_RESET_READ\",\"mode\":\"raw\"}" | structured)
+    if printf '%s' "$RESET_READ" | grep -q 'PROFILE_ALPHA'; then
+        fail "Profile 删除并复用进程槽后仍残留旧 Cookie"
+    fi
+    mcp_call 22 profile_delete "{\"profile_id\":\"$PROFILE_A\"}" | structured >/dev/null
+    mcp_call 23 profile_delete "{\"profile_id\":\"$PROFILE_B\"}" | structured | grep -q '"deleted": true' \
+        || fail "Profile B 删除失败"
+    SESSION_TEST_READY=0
+    echo "== independent DOM + concurrent session model + process/data-dir/cookie profile isolation ✓ =="
+    ;;
 llmtest)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
     DEV_ADDR=$(pick_device "${2:-}")
@@ -445,6 +563,6 @@ clean)
     "$GRADLE_CMD" clean --no-daemon
     ;;
 *)
-    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|providertest|llmtest|searchtest|opentest|clean）"
+    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|providertest|sessiontest|llmtest|searchtest|opentest|clean）"
     ;;
 esac

@@ -22,8 +22,10 @@ import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 
 /** 一次完整提取的内部结果；UI 与 MCP 复用同一份页面产物。 */
+@Serializable
 data class RuntimePageResult(
     val page: CompressedPage,
     val markdown: String,
@@ -50,6 +52,7 @@ interface PageKitRuntime {
     suspend fun title(): String
     suspend fun inspect(elementId: String): String
     suspend fun armSubmitHook(): String
+    suspend fun currentUrl(): String
 }
 
 /** WebView 驱动的 Android 运行时。 */
@@ -134,6 +137,7 @@ class AndroidPageKitRuntime(
     override suspend fun title(): String = controller.title(loader.webView)
     override suspend fun inspect(elementId: String): String = controller.inspect(loader.webView, elementId)
     override suspend fun armSubmitHook(): String = controller.armSubmitHook(loader.webView)
+    override suspend fun currentUrl(): String = withContext(Dispatchers.Main.immediate) { loader.currentUrl() }
 
     fun destroy() = loader.destroy()
 }

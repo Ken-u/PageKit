@@ -90,6 +90,7 @@ class DefaultPageKitApi(
     suspend fun title(): String = sessionMutex.withLock { runtime.title() }
     suspend fun inspect(elementId: String): String = sessionMutex.withLock { runtime.inspect(elementId) }
     suspend fun armSubmitHook(): String = sessionMutex.withLock { runtime.armSubmitHook() }
+    suspend fun currentUrl(): String = sessionMutex.withLock { runtime.currentUrl() }
 
     private fun operationOk(result: String): Boolean = runCatching {
         Json.parseToJsonElement(result).jsonObject["ok"]?.jsonPrimitive?.content == "true"

@@ -44,7 +44,7 @@ class HomeViewModel(
 
     private val jsonFmt = Json { prettyPrint = true; encodeDefaults = false }
 
-    /** UI 与 API 共用同一个进程级 WebView。 */
+    /** UI 与 API 共用 default Session 的 WebView。 */
     val loader = runtime.loader
 
     val loadState: StateFlow<LoadState> = loader.state

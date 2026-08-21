@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
     private fun handleIntents(intent: Intent?) {
         intent ?: return
         when (intent.action) {
-            // 浏览器控制（singleTask → 主进程内直接操作共享 WebView）
+            // adb 浏览器控制固定操作 UI 的 default Session。
             CONTROL_ACTION -> {
                 val op = intent.getStringExtra("op") ?: return
                 val eid = intent.getStringExtra("eid")

@@ -44,7 +44,11 @@ interface LlmSettings {
 }
 
 class SharedPreferencesLlmSettings(context: Context) : LlmSettings {
-    private val preferences = context.getSharedPreferences("pagekit_llm", Context.MODE_PRIVATE)
+    @Suppress("DEPRECATION")
+    private val preferences = context.getSharedPreferences(
+        "pagekit_llm",
+        Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS,
+    )
 
     override fun load() = LlmConfig(
         endpoint = preferences.getString("endpoint", DEFAULT_ENDPOINT) ?: DEFAULT_ENDPOINT,

@@ -6,7 +6,7 @@ import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.engine.SearchEngine
 
 /**
- * PageKit 对外门面；UI 与 MCP server 共用同一串行浏览器会话。
+ * 单个 PageKit 浏览器 Session 的对外门面；多 Session/Profile 由 session gateway 路由。
  */
 interface PageKitApi {
 

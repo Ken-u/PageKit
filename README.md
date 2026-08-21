@@ -19,12 +19,16 @@
 | 章节展开 | 私有缓存保存原始 Markdown，`page_id + section_id` 可无网络 `expand` |
 | MCP | 设备 localhost Streamable HTTP，Bearer token + Origin 校验 + 前台服务生命周期 |
 | Coding Agent adapter | 标准 `WebSearchProvider` + Kimi Code 原生 SearchWeb HTTP 协议；其他 Agent 走 MCP |
+| Session 隔离 | 每个 Session 独立 WebView、导航、DOM、JS Context、元素编号与操作互斥锁 |
+| Profile 隔离 | 3 个独立 Android worker 进程 + `WebView.setDataDirectorySuffix`，隔离 Cookie/存储/缓存 |
 | 广告过滤 | StevenBlack hosts 请求过滤 + EasyList/EasyList China DOM 清洗 + 在线更新 |
 
 ## 架构
 
 ```text
-URL / 关键词 → SearchEngine(引擎URL模板) → WebPageLoader(共享WebView)
+Agent → ProfileRouter(default / :profile1 / :profile2 / :profile3)
+    → SessionRegistry → 每 Session 一个 WebView + Mutex
+URL / 关键词 → SearchEngine(引擎URL模板) → WebPageLoader(Session WebView)
     → ContentExtractor(Readability+NoiseRules 去噪) → HtmlToMarkdown
     → StructuredAssembler(JSON 骨架)
     → compress/(raw 透传 | OpenAI-compatible compact/focus + PageExpansionCache)
@@ -33,6 +37,8 @@ URL / 关键词 → SearchEngine(引擎URL模板) → WebPageLoader(共享WebVie
 engine/BrowserController: [eN] 快照 + click/type/scroll/annotate
 engine/SearchEngine: 引擎注册表(bing/baidu/sogou/360/google)，URL 模板拼接
 api/PageKitApi: MCP 工具契约（fetch/webSearch/expand/交互元素/浏览器控制）
+session/: 多 WebView 注册表、Session/Profile 路由
+profile/: AIDL + ParcelFileDescriptor 跨进程通道、独立 WebView data directory
 engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager 更新
 ```
 
@@ -46,13 +52,14 @@ engine/adblock/AdBlocker: StevenBlack hosts + EasyList cosmetic + WorkManager �
 ./build.sh verify [serial]  # 实机全链路验证（加载→提取→md/json/prompt）
 ./build.sh mcptest [serial] # MCP 鉴权、Origin、握手与工具发现
 ./build.sh providertest [serial] # Kimi SearchWeb provider 鉴权与协议结构
+./build.sh sessiontest [serial] # 多 WebView DOM + 多进程 Profile/Cookie 隔离
 ./build.sh llmtest [serial] # compact/focus、确定性字段保真与 expand 闭环
 ./build.sh searchtest ["查询词"] ["https://www.bing.com"] [serial]  # 搜索结果页直航→提取（支持 baidu/bing/sogou/360/google）
 ./build.sh opentest ["查询词"] ["https://www.bing.com"] [serial]   # 搜索→点进第一条真实结果→详情页提取
 ./build.sh release          # release APK
 ./build.sh clean
 
-# 手动方式：需 JDK 17 + Android SDK（platform-35 / build-tools 35）
+# 手动方式：需 JDK 17 + Android SDK（platform-35 / build-tools 35）；minSdk 28
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -106,7 +113,13 @@ npx -y @modelcontextprotocol/inspector --web \
 ```
 
 当前工具：`webfetch`、`websearch`、`expand`、`browser_snapshot`、`browser_click`、
-`browser_type`、`browser_scroll`、`llm_status`、`llm_configure`。
+`browser_type`、`browser_scroll`、`profile_create`、`profile_list`、`profile_delete`、
+`session_create`、`session_list`、`session_close`、`llm_status`、`llm_configure`。
+
+页面和浏览器工具均接受可选 `session_id`，缺省使用 UI 的 `default` Session。隔离 Profile
+最多 3 个，每个 Profile 最多 4 个 WebView Session；同 Profile 的 Session 共享 Cookie，
+不同 Profile 使用独立进程和 WebView 数据目录。完整语义和调用顺序见
+[Session 与 Profile 隔离](docs/sessions-and-profiles.md)。
 
 `webfetch` 支持 `mode=raw|compact|focus`。raw 始终离线；compact/focus
 使用在 Prompt 页或 `llm_configure` 中保存的 OpenAI-compatible endpoint/model/key。
@@ -130,10 +143,6 @@ Kimi 原生配置、Kimi MCP 命令、通用 MCP JSON，以及新增其他厂商
 广告规则以 APK 内的固定快照作为永久兜底。WorkManager 在联网条件下每 7 天检查
 StevenBlack hosts、EasyList 和 EasyList China，使用 ETag/Last-Modified 条件请求；
 响应有 12 MiB 上限，须通过完整解析和最低规则数校验后才会原子写入私有缓存并热切换。
-
-## 后续路线
-
-- OkHttp 静态抓取快速通道
 
 ## 许可
 

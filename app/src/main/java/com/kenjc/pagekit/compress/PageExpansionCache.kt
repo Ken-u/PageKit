@@ -104,9 +104,18 @@ object MarkdownSectionParser {
 class FilePageExpansionCache(
     context: Context,
     private val maxPages: Int = 12,
+    namespace: String = "default",
 ) : PageExpansionCache {
-    private val directory = context.filesDir.resolve("page-cache").apply { mkdirs() }
-    private val preferences = context.getSharedPreferences("pagekit_page_cache", Context.MODE_PRIVATE)
+    private val safeNamespace = namespace.also {
+        require(NAMESPACE.matches(it)) { "invalid page cache namespace" }
+    }
+    private val directory = context.filesDir.resolve(
+        if (safeNamespace == "default") "page-cache" else "page-cache/$safeNamespace",
+    ).apply { mkdirs() }
+    private val preferences = context.getSharedPreferences(
+        if (safeNamespace == "default") "pagekit_page_cache" else "pagekit_page_cache_$safeNamespace",
+        Context.MODE_PRIVATE,
+    )
     private val latestId = AtomicReference(preferences.getString("latest_page_id", null))
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -180,6 +189,7 @@ class FilePageExpansionCache(
 
     private companion object {
         val PAGE_ID = Regex("[a-f0-9]{24}")
+        val NAMESPACE = Regex("[a-zA-Z0-9._-]{1,80}")
         const val MAX_MARKDOWN_CHARS = 5_000_000
     }
 }

@@ -87,6 +87,7 @@ class DefaultPageKitApiTest {
         override suspend fun title(): String = guarded { ok() }
         override suspend fun inspect(elementId: String): String = guarded { ok() }
         override suspend fun armSubmitHook(): String = guarded { ok() }
+        override suspend fun currentUrl(): String = guarded { lastRequest?.url.orEmpty() }
 
         private suspend fun <T> guarded(block: () -> T): T {
             calls.incrementAndGet()

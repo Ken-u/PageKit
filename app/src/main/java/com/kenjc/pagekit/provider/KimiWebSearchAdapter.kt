@@ -14,9 +14,9 @@ class KimiWebSearchAdapter(
         encodeDefaults = true
     },
 ) {
-    suspend fun handle(requestBody: String): String {
+    suspend fun handle(requestBody: String, scopedProvider: WebSearchProvider = provider): String {
         val request = json.decodeFromString<KimiSearchRequest>(requestBody).validated()
-        val response = provider.search(
+        val response = scopedProvider.search(
             WebSearchRequest(
                 query = request.textQuery,
                 limit = request.limit,

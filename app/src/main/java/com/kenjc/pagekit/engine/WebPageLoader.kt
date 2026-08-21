@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -28,9 +29,9 @@ sealed interface LoadState {
 }
 
 /**
- * 共享 WebView 的加载与提取控制（PLAN.md：M2）。
+ * 单个浏览器 Session 的 WebView 加载与提取控制（PLAN.md：M2）。
  *
- * - WebView 由本类在主线程创建并配置，「网页」Tab 直接展示该实例
+ * - WebView 由本类在主线程创建并配置；default Session 的实例由「网页」Tab 展示
  * - 空闲判定：progress==100 + document.readyState=="complete" + 静默 800ms
  * - 超时：20s；主资源加载错误即 Failed
  * - 请求级广告拦截挂点：shouldInterceptRequest → [adBlocker]
@@ -43,6 +44,8 @@ class WebPageLoader(
         private const val QUIET_AFTER_COMPLETE_MS = 800L
         private const val LOAD_TIMEOUT_MS = 20_000L
         private const val READINESS_DEBOUNCE_MS = 200L
+        private const val DEFAULT_VIEWPORT_WIDTH = 1080
+        private const val DEFAULT_VIEWPORT_HEIGHT = 1920
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,7 +57,7 @@ class WebPageLoader(
     val state = MutableStateFlow<LoadState>(LoadState.Idle)
     val canGoBack = MutableStateFlow(false)
 
-    /** 共享 WebView 实例，主线程创建，随 ViewModel 生命周期销毁 */
+    /** Session 专属 WebView，主线程创建，随 Session 生命周期销毁。 */
     val webView: WebView = createWebView(context.applicationContext)
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -78,6 +81,12 @@ class WebPageLoader(
                     if (newProgress >= 100) scheduleReadinessCheck()
                 }
             }
+            // 离屏 Session 也需要稳定 viewport；挂到 UI 后 Compose 会按实际尺寸重新布局。
+            measure(
+                View.MeasureSpec.makeMeasureSpec(DEFAULT_VIEWPORT_WIDTH, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(DEFAULT_VIEWPORT_HEIGHT, View.MeasureSpec.EXACTLY),
+            )
+            layout(0, 0, DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT)
         }
     }
 

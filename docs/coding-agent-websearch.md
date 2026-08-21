@@ -5,8 +5,8 @@ PageKit 在同一个设备回环服务上提供两种 adapter：
 - 通用 MCP：`POST http://127.0.0.1:3000/mcp`
 - Kimi Code 原生 `SearchWeb`：`POST http://127.0.0.1:3000/v1/search`
 
-两者共用 PageKit 的 WebView 登录态、搜索引擎、广告过滤和串行浏览器会话。服务只绑定设备
-localhost；主机侧先执行：
+两者共用 PageKit 的搜索引擎和广告过滤管线，但可路由到不同 WebView Session/Profile。
+服务只绑定设备 localhost；主机侧先执行：
 
 ```bash
 adb forward tcp:19300 tcp:3000
@@ -36,7 +36,18 @@ Kimi 会自动发送 `Authorization: Bearer <api_key>`。PageKit adapter 完整�
 
 返回 `search_results[]`，每项都包含 `site_name/title/url/snippet/content/date/icon/mime`。
 `enable_page_crawling=true` 时会依次打开结果页并尝试提取 Markdown；单个目标页不可访问时该项
-`content` 为空，但不会丢掉搜索结果。共享 WebView 必须串行工作，建议同时把 `limit` 控制在 3–5。
+`content` 为空，但不会丢掉搜索结果。同一 Session 内请求会串行，建议同时把 `limit` 控制在 3–5。
+
+未指定 Header 时，每个 Kimi 请求创建并销毁一个临时 Session。要固定到隔离 Profile，先通过 MCP
+调用 `profile_create`，再配置：
+
+```toml
+[services.moonshot_search.custom_headers]
+X-PageKit-Profile = "work"
+```
+
+也可传 `X-PageKit-Session` 使用一个由 `session_create` 返回的长期 Session；Session ID 在 App
+进程重启后失效。
 
 也可以不覆盖内置工具，直接把 PageKit 作为 MCP server 加入 Kimi：
 
@@ -67,7 +78,7 @@ kimi mcp test pagekit
 
 VS Code 的 `.vscode/mcp.json` 使用相同 server 内容，但顶层键名是 `servers`。不同客户端只需
 按自身格式放入 MCP 配置；PageKit 不依赖某个 Agent SDK。连接后会发现 `websearch`、
-`webfetch`、`expand` 和浏览器控制工具。
+`webfetch`、`expand`、Session/Profile 管理和浏览器控制工具。
 
 ## 自定义 adapter
 
@@ -92,4 +103,5 @@ fun interface WebSearchProvider {
 ```bash
 ./build.sh test
 ./build.sh providertest
+./build.sh sessiontest
 ```
