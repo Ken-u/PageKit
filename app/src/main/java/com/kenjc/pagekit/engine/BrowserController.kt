@@ -32,7 +32,50 @@ class BrowserController {
     suspend fun click(webView: WebView, eid: String): String = eval(
         webView,
         opJs(eid) {
-            """el.scrollIntoView({block:'center',inline:'nearest'});el.click();return ok('clicked:$eid');"""
+            """
+            el.scrollIntoView({block:'center',inline:'nearest'});
+            function fire(type, Ctor) {
+              try {
+                var r = el.getBoundingClientRect();
+                var ev = new Ctor(type, {bubbles:true, cancelable:true, composed:true,
+                  clientX:r.left + r.width/2, clientY:r.top + r.height/2,
+                  button:0, buttons:1});
+                el.dispatchEvent(ev);
+              } catch(e){}
+            }
+            fire('pointerdown', PointerEvent); fire('mousedown', MouseEvent);
+            el.classList.add('pk-active');
+            fire('pointerup', PointerEvent);   fire('mouseup', MouseEvent);
+            el.classList.remove('pk-active');
+            el.click();
+            var form = el.closest('form');
+            if (form && (el.type === 'submit' || el.getAttribute('type') === 'submit')) {
+              // 站点脚本可能在 input 事件后异步清空输入框；提交前把快照值补回
+              function refill() {
+                try {
+                  form.querySelectorAll('input:not([type=submit]):not([type=button]):not([type=hidden])').forEach(function(inp){
+                    var pv = inp.getAttribute('data-pk-value');
+                    if (pv && inp.value !== pv) {
+                      var d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+                      d && d.set ? d.set.call(inp, pv) : (inp.value = pv);
+                      inp.dispatchEvent(new Event('input', {bubbles:true}));
+                    }
+                  });
+                } catch(e){}
+              }
+              refill();
+              try { form.requestSubmit ? form.requestSubmit(el) : form.submit(); } catch(e){}
+              // 异步清值竞态兜底：1.5s 后仍未导航则补写并强制提交一次
+              var href0 = location.href;
+              setTimeout(function(){
+                if (location.href === href0) {
+                  refill();
+                  try { form.submit(); } catch(e){}
+                }
+              }, 1500);
+            }
+            return ok('clicked:$eid');
+            """.trimIndent()
         },
     ).orEvalFailed()
 
@@ -42,15 +85,44 @@ class BrowserController {
             """
             if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return err('not-inputtable:$eid');
             el.focus();
-            var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            el.select && el.select();
             var v = ${jsString(text)};
-            if (desc && desc.set) desc.set.call(el, v); else el.value = v;
-            el.dispatchEvent(new Event('input', {bubbles:true}));
-            el.dispatchEvent(new Event('change', {bubbles:true}));
-            return ok('typed:$eid=' + v);
+            var usedExec = false;
+            try {
+                // 首选：原生文本输入管线（execCommand 已弃用但 WebView 支持，
+                // 走真实输入事件，React/Vue/站点 sug 脚本都能正确接管）
+                usedExec = document.execCommand('insertText', false, v);
+            } catch(e){}
+            if (!usedExec || el.value !== v) {
+                // 兜底：原生 value setter + 合成事件（受控组件兼容）
+                var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && desc.set) desc.set.call(el, v); else el.value = v;
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+            }
+            // 记录期望值：click 提交前补写（对抗站点脚本异步清空）
+            el.setAttribute('data-pk-value', v);
+            return el.value === v ? ok('typed:$eid=' + v) : err('verify-failed:$eid value=' + el.value);
             """.trimIndent()
         },
+    ).orEvalFailed()
+
+    /** 诊断：form 提交 hook —— snapshot 后调用，click 前调用；submit 被触发会改写 document.title */
+    suspend fun armSubmitHook(webView: WebView): String = eval(
+        webView,
+        """
+(function(){
+  var n = 0;
+  document.querySelectorAll('form').forEach(function(f){
+    if (f.__pkHooked) return; f.__pkHooked = 1;
+    f.addEventListener('submit', function(){ n++; document.title = 'PK_FORM_SUBMIT_' + n; }, true);
+  });
+  var os = HTMLFormElement.prototype.submit;
+  HTMLFormElement.prototype.submit = function(){ n++; document.title = 'PK_FORM_SUBMIT_' + n; return os.apply(this, arguments); };
+  return JSON.stringify({ok:true, result:'hooked:' + document.querySelectorAll('form').length});
+})()
+        """.trimIndent(),
     ).orEvalFailed()
 
     suspend fun scroll(webView: WebView, dx: Int, dy: Int): String = eval(
@@ -70,6 +142,14 @@ class BrowserController {
     suspend fun title(webView: WebView): String = eval(
         webView,
         """(function(){return JSON.stringify({ok:true,result:document.title})})()""",
+    ).orEvalFailed()
+
+    /** 诊断：按 eid 输出元素 outerHTML 片段（截断 200 字符） */
+    suspend fun inspect(webView: WebView, eid: String): String = eval(
+        webView,
+        opJs(eid) {
+            """var h = el.outerHTML || ''; return ok(h.slice(0, 200));"""
+        },
     ).orEvalFailed()
 
     // ---- internals ----
@@ -127,8 +207,8 @@ class BrowserController {
     if (!eid) { eid = 'e' + (window.__pkNextEid++); el.setAttribute('data-pk-eid', eid); }
     var tag = el.tagName.toLowerCase();
     if (tag === 'input' && el.type) tag = 'input:' + el.type;
-    var label = (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
-                 el.getAttribute('title') || el.value ||
+    var label = (el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+                 el.getAttribute('title') ||
                  (el.textContent || '').replace(/\s+/g,' ').trim() || el.getAttribute('name') || '').slice(0, 40);
     out.push('[' + eid + '] ' + tag + (label ? ' ' + label : ''));
   });

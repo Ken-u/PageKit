@@ -88,7 +88,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * 控制操作（intent 驱动，MCP 浏览器控制前身）：
      * op ∈ snapshot|click|type|scroll|annotate|title，结果写 filesDir/control_result.txt
      */
-    fun controlOp(op: String, eid: String?, text: String?, focusIntent: String?, dx: Int, dy: Int) {
+    fun controlOp(op: String, eid: String?, text: String?, focusIntent: String?, dx: Int, dy: Int, navUrl: String? = null) {
         viewModelScope.launch {
             val wv = loader.webView
             val result = when (op) {
@@ -98,6 +98,25 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 "scroll" -> controller.scroll(wv, dx, dy)
                 "annotate" -> controller.annotate(wv, !annotateOn.value).also { annotateOn.value = !annotateOn.value }
                 "title" -> controller.title(wv)
+                // 当前 URL（诊断搜索跳转）
+                "url" -> """{"ok":true,"result":"${loader.currentUrl()}"}"""
+                // 导航：当前 WebView 直接加载（供脚本兜底链路）
+                "navigate" -> navUrl?.let {
+                    loader.loadUrl(it)
+                    """{"ok":true,"result":"navigating:$it"}"""
+                } ?: errOp("missing url")
+                // 诊断：元素 outerHTML
+                "inspect" -> eid?.let { controller.inspect(wv, it) } ?: errOp("missing eid")
+                // 诊断：form submit hook（click 前调用，title 变 PK_FORM_SUBMIT_n 说明提交被触发）
+                "armhook" -> controller.armSubmitHook(wv)
+                // 触发提取（异步）：先清结果文件，便于调用方轮询新结果
+                "extract" -> {
+                    runCatching {
+                        getApplication<Application>().filesDir.resolve("last_result.txt").delete()
+                    }
+                    extract()
+                    """{"ok":true,"result":"extract-started"}"""
+                }
                 // M6：三段完整 Prompt（最近一次提取的 markdown + focusIntent 拼装，adb 导出验证）
                 "prompt" -> PromptBuilder.buildFullPrompt(
                     url = loader.currentUrl(),

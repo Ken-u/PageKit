@@ -40,8 +40,10 @@ class MainActivity : ComponentActivity() {
                 val text = intent.getStringExtra("text")
                 val dx = intent.getIntExtra("dx", 0)
                 val dy = intent.getIntExtra("dy", 600)
-                Log.i("PageKit", "CONTROL intent: op=$op eid=$eid text=$text dx=$dx dy=$dy")
-                (applicationContext as PageKitApp).homeViewModel.controlOp(op, eid, text, intent.getStringExtra("intent"), dx, dy)
+                // navigate op：直接在当前 WebView 导航（绕开 Compose LaunchedEffect key 问题）
+                val navUrl = intent.getStringExtra("url")
+                Log.i("PageKit", "CONTROL intent: op=$op eid=$eid text=$text dx=$dx dy=$dy navUrl=$navUrl")
+                (applicationContext as PageKitApp).homeViewModel.controlOp(op, eid, text, intent.getStringExtra("intent"), dx, dy, navUrl)
             }
 
             else -> Unit

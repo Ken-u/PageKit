@@ -50,14 +50,41 @@ fi
 # ---- 命令 ----
 CMD="${1:-build}"
 
-pick_device() {
-    local serial="${1:-}"
-    if [ -z "$serial" ]; then
-        serial="$("$ADB" devices | awk '/device$/{print $1; exit}')" || true
-    fi
-    [ -n "$serial" ] || fail "未找到 adb 设备（adb devices 查看序列号）"
-    echo "$serial"
+DEFAULT_SERIAL="ATS3588002"   # 固定验证设备（USB）；可被环境变量 PAGEKIT_DEVICE 或命令参数覆盖
+
+# 设备联网预检：1=有网 0=无网
+device_online_ok() { # device_online_ok "-s serial" 或 "-t tid"
+    "$ADB" $1 shell "ping -c 1 -W 2 223.5.5.5" >/dev/null 2>&1
 }
+
+pick_device() {
+    local serial="${1:-${PAGEKIT_DEVICE:-$DEFAULT_SERIAL}}"
+    # 指定 serial 可用且有网 → "-s serial"
+    if "$ADB" -s "$serial" shell true >/dev/null 2>&1; then
+        if device_online_ok "-s $serial"; then
+            echo "-s $serial"
+            return
+        fi
+        echo "（提示：$serial 无网络，寻找有网设备）" >&2
+    fi
+    # 遍历在线设备：优先有网的
+    local line cand tid
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if "$ADB" -s "$line" shell true >/dev/null 2>&1 && device_online_ok "-s $line"; then
+            echo "-s $line"
+            return
+        fi
+        tid="$("$ADB" devices -l | awk -v s="$line" '$1==s{for(i=1;i<=NF;i++) if($i~/^transport_id:/){sub("transport_id:","",$i);print $i;exit}}')"
+        if [ -n "$tid" ] && "$ADB" -t "$tid" shell true >/dev/null 2>&1 && device_online_ok "-t $tid"; then
+            echo "-t $tid"
+            return
+        fi
+    done < <("$ADB" devices | awk '/device$/{print $1}')
+    fail "没有联网的 adb 设备"
+}
+
+# 设备寻址说明：各命令内部调用 pick_device，返回 serial 或 "-t <tid>"（TCP serial 失效时回退）
 
 case "$CMD" in
 build)
@@ -74,32 +101,133 @@ test)
     ;;
 install)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
-    DEV=$(pick_device "${2:-}")
-    "$ADB" -s "$DEV" install -r app/build/outputs/apk/debug/app-debug.apk
-    echo "✓ 已安装到 $DEV"
+    DEV_ADDR=$(pick_device "${2:-}")
+    "$ADB" $DEV_ADDR install -r app/build/outputs/apk/debug/app-debug.apk
+    echo "✓ 已安装到 $DEV_ADDR"
     ;;
 verify)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
-    DEV=$(pick_device "${2:-}")
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
     PKG=com.kenjc.pagekit
-    echo "== 设备: $DEV =="
-    "$ADB" -s "$DEV" install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
-    "$ADB" -s "$DEV" shell am force-stop "$PKG"
-    "$ADB" -s "$DEV" logcat -c
-    "$ADB" -s "$DEV" shell am start -W -n "$PKG/.MainActivity" \
+    echo "== 设备: $DEV_ADDR =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    $A logcat -c
+    $A shell am start -W -n "$PKG/.MainActivity" \
         -d "file:///android_asset/test/testpage.html" --ez extract true >/dev/null
     sleep 6
     echo "-- Markdown --"
-    "$ADB" -s "$DEV" shell am broadcast -a "${PKG}.FETCH_RESULT" \
+    $A shell am broadcast -a "${PKG}.FETCH_RESULT" \
         -n "$PKG/.ResultTunnelReceiver" 2>/dev/null | grep -oE 'result=[0-9-]+|data="[^"]{0,60}'
     echo "-- JSON --"
-    "$ADB" -s "$DEV" shell am broadcast -a "${PKG}.FETCH_RESULT" --es format json \
+    $A shell am broadcast -a "${PKG}.FETCH_RESULT" --es format json \
         -n "$PKG/.ResultTunnelReceiver" 2>/dev/null | grep -oE 'result=[0-9-]+'
     echo "-- Prompt --"
-    "$ADB" -s "$DEV" shell am start -a "${PKG}.CONTROL" --es op prompt >/dev/null 2>&1
+    $A shell am start -a "${PKG}.CONTROL" --es op prompt >/dev/null 2>&1
     sleep 1
-    "$ADB" -s "$DEV" shell "run-as $PKG wc -c files/control_result.txt" | awk '{print "prompt bytes:", $1}'
-    "$ADB" -s "$DEV" shell pidof "$PKG" >/dev/null && echo "== 进程存活 ✓ ==" || fail "进程已退出"
+    $A shell "run-as $PKG wc -c files/control_result.txt" | awk '{print "prompt bytes:", $1}'
+    $A shell pidof "$PKG" >/dev/null && echo "== 进程存活 ✓ ==" || fail "进程已退出"
+    ;;
+searchtest)
+    # 端到端：搜索引擎 → 输入 → 点击搜索 → 结果页提取
+    # 用法: ./build.sh searchtest ["查询词"] ["https://www.baidu.com"] [serial]
+    QUERY="${2:-RTX5090 部署}"
+    ENGINE="${3:-https://www.baidu.com}"
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${4:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+
+    ctl() { # ctl <op> [extra args...] —— timeout 防 USB 抖动悬挂
+        timeout 20 $A shell am start -a "${PKG}.CONTROL" "$@" >/dev/null 2>&1 || true
+        sleep 1.5
+    }
+    ctlfile() { timeout 15 $A shell "run-as $PKG cat files/control_result.txt" 2>/dev/null | tr -d '\r' || true; }
+    fetchmd() {
+        timeout 20 $A shell am broadcast -a "${PKG}.FETCH_RESULT" -n "$PKG/.ResultTunnelReceiver" 2>/dev/null \
+            | grep -oE 'result=[0-9-]+|data=".*"' | head -40 || true
+    }
+
+    echo "== 设备: $DEV_ADDR | 引擎: $ENGINE | 查询: $QUERY =="
+    $A install -r app/build/outputs/apk/debug/app-debug.apk >/dev/null
+    $A shell am force-stop "$PKG"
+    $A shell am start -W -n "$PKG/.MainActivity" -d "$ENGINE" >/dev/null
+    # 首屏可能因 TLS/DNS 冷启动较慢，最长等 25s（title 变成引擎页即成功）
+    LOADED=0
+    for i in $(seq 1 5); do
+        sleep 5
+        $A shell am start -a "${PKG}.CONTROL" --es op title >/dev/null 2>&1
+        sleep 1.5
+        T=$(ctlfile)
+        case "$T" in
+            *Webpage*|*\"ok\":false*|*引擎*URL*|*about:blank*) ;;
+            *ok\":true*) echo "-- 引擎已加载: $T"; LOADED=1; break ;;
+        esac
+    done
+    [ "$LOADED" = 1 ] || fail "引擎页加载失败: $T"
+
+    # 1) 快照并定位搜索框/按钮
+    ctl --es op snapshot
+    INPUT_EID=$(ctlfile | grep -oE '\[e[0-9]+\] input:(text|search)' | head -1 | grep -oE 'e[0-9]+')
+    BTN_EID=$(ctlfile | grep -oE '\[e[0-9]+\] (button|input:submit)[^ ]*' | head -1 | grep -oE 'e[0-9]+')
+    echo "-- 元素: 搜索框=$INPUT_EID 按钮=$BTN_EID --"
+    [ -n "$INPUT_EID" ] || fail "未找到搜索输入框（快照结果见上）"
+
+    # 2) 输入查询词并触发搜索：
+    #    优先浏览器控制链路（type+click，验证 [eN] 编号机制），
+    #    同时构造搜索引擎结果页 URL 直接导航（稳定契约，规避站点 sug 清值竞态）
+    ctl --es op type --es eid "$INPUT_EID" --es text "$QUERY"
+    if [ -n "$BTN_EID" ]; then
+        ctl --es op click --es eid "$BTN_EID"
+    else
+        ctl --es op click --es eid "$INPUT_EID"
+    fi
+    # 3) 轮询等待结果页（URL 含查询参数）；6s 未跳转则 URL 直航兜底
+    NAVIGATED=0
+    for i in $(seq 1 4); do
+        sleep 2.5
+        $A shell am start -a "${PKG}.CONTROL" --es op url >/dev/null 2>&1
+        sleep 1.2
+        U=$(ctlfile)
+        case "$U" in
+            *word=*|*wd=*|*query=*)
+                echo "-- 结果页已就绪(浏览器控制): $(echo "$U" | grep -oE 'https?://[^"]{0,80}')"
+                NAVIGATED=1; break ;;
+        esac
+    done
+    if [ "$NAVIGATED" != 1 ]; then
+        case "$ENGINE" in
+            *baidu*)    RESULT_URL="https://www.baidu.com/s?wd=$(echo "$QUERY" | sed 's/ /%20/g')" ;;
+            *bing*)     RESULT_URL="https://www.bing.com/search?q=$(echo "$QUERY" | sed 's/ /%20/g')" ;;
+            *google*)   RESULT_URL="https://www.google.com/search?q=$(echo "$QUERY" | sed 's/ /%20/g')" ;;
+            *)          RESULT_URL="" ;;
+        esac
+        if [ -n "$RESULT_URL" ]; then
+            echo "-- URL 直航兜底: $RESULT_URL"
+            ctl --es op navigate --es url "$RESULT_URL"
+            sleep 8
+            NAVIGATED=1
+        fi
+    fi
+    [ "$NAVIGATED" = 1 ] || echo "-- 未确认跳转（url=$U），仍尝试提取 --"
+    sleep 5   # 结果页动态渲染
+
+    # 4) 提取并轮询结果
+    $A shell am start -a "${PKG}.CONTROL" --es op extract >/dev/null 2>&1
+    OK=0
+    for i in $(seq 1 15); do
+        R=$(fetchmd | head -1)
+        case "$R" in
+            result=-*) ;;        # result=-1：尚未完成，继续轮询
+            result=*) OK=1; break ;;
+        esac
+        sleep 1
+    done
+    [ "$OK" = 1 ] || fail "提取超时（15s）"
+    echo "-- 提取结果（前 40 行） --"
+    fetchmd
+    $A shell pidof "$PKG" >/dev/null && echo "== searchtest ✓ ==" || fail "进程已退出"
     ;;
 clean)
     "$GRADLE_CMD" clean --no-daemon

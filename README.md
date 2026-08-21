@@ -38,6 +38,7 @@ adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
 ./build.sh test             # JVM 单测
 ./build.sh install [serial] # 安装到实机
 ./build.sh verify [serial]  # 实机全链路验证（加载→提取→md/json/prompt）
+./build.sh searchtest ["查询词"] ["https://www.baidu.com"] [serial]  # 搜索引擎端到端：输入→点击→结果页提取
 ./build.sh release          # release APK
 ./build.sh clean
 
