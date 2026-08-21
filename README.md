@@ -9,25 +9,27 @@
 | 能力 | 说明 |
 | --- | --- |
 | 网页渲染 | 应用内 WebView（JS/Cookie/登录态可用），顶部 Tab 真实可交互 |
+| 搜索引擎直航 | 五引擎 URL 模板（Bing 默认 / Baidu / Sogou / 360 / Google），输入关键词直接拼接结果页 URL 导航，无需进首页 |
 | 主内容提取 | Readability.js + 克隆 DOM 去噪（SPECS.md 忽略清单），最大文本块兜底 |
 | Markdown 输出 | flexmark html2md，代码/表格/链接原文保留 |
 | 结构化 JSON | SPECS.md Schema：确定性字段（code_blocks/tables/commands/links/downloads）规则填充，语义字段留待 LLM |
 | 浏览器控制 | 元素快照 `[eN]` 编号 + click/type/scroll + 元素标注开关 |
 | Prompt 导出 | SPECS.md System/Developer/User 三段完整 Prompt，可复制贴给任意 LLM |
-| MCP 契约预留 | `api/PageKitApi`（fetch/expand/交互元素/浏览器控制），V2 薄封装上 MCP |
+| MCP 契约预留 | `api/PageKitApi`（fetch/webSearch/expand/交互元素/浏览器控制），V2 薄封装上 MCP |
 
 ## 架构
 
 ```text
-URL → WebPageLoader(共享WebView)
+URL / 关键词 → SearchEngine(引擎URL模板) → WebPageLoader(共享WebView)
     → ContentExtractor(Readability+NoiseRules 去噪) → HtmlToMarkdown
     → StructuredAssembler(JSON 骨架)
     → compress/(Compressor V1=Noop | V2=LLM)
     → ui/(网页/Markdown/JSON/Prompt 四 Tab)
 
 engine/BrowserController: [eN] 快照 + click/type/scroll/annotate
-api/PageKitApi: MCP 工具契约（webfetch/expand/交互元素/浏览器控制）
-adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
+engine/SearchEngine: 引擎注册表(bing/baidu/sogou/360/google)，URL 模板拼接
+api/PageKitApi: MCP 工具契约（fetch/webSearch/expand/交互元素/浏览器控制）
+engine/adblock/AdBlocker: SPI 预留（V2 挂 StevenBlack hosts / EasyList）
 ```
 
 ## 构建
@@ -68,6 +70,10 @@ adb shell am start -a com.kenjc.pagekit.CONTROL --es op click --es eid e5
 adb shell am start -a com.kenjc.pagekit.CONTROL --es op scroll --ei dy 400
 adb shell am start -a com.kenjc.pagekit.CONTROL --es op prompt --es intent "部署指南"
 adb shell run-as com.kenjc.pagekit cat files/control_result.txt
+
+# 搜索引擎直航（关键词 → 结果页 URL 拼接 → 加载并提取）
+adb shell am start -n com.kenjc.pagekit/.MainActivity \
+  -a com.kenjc.pagekit.SEARCH --es query "RTX5090 部署" --es engine bing
 
 # 单测（JVM）
 ./gradlew :app:testDebugUnitTest
