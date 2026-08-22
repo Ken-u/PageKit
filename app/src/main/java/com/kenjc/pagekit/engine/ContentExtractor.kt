@@ -98,7 +98,7 @@ class ContentExtractor(private val context: Context) {
   if (!result) {
     mode = "fallback";
     var cands = docClone.querySelectorAll("main,article,[role=main],#content,.content,.post,.entry-content");
-    if (!cands.length) cands = docClone.querySelectorAll("div,section");
+    if (!cands.length) cands = docClone.querySelectorAll("div,section,pre");
     var best = null, bestLen = 0;
     cands.forEach(function(el){
       var len = (el.textContent || "").trim().length;

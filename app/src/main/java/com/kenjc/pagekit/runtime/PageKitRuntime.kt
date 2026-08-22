@@ -9,6 +9,8 @@ import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.NoopCompressor
 import com.kenjc.pagekit.compress.PageExpansionCache
 import com.kenjc.pagekit.compress.PageContext
+import com.kenjc.pagekit.net.ProxyConfig
+import com.kenjc.pagekit.net.SharedPreferencesProxySettings
 import com.kenjc.pagekit.engine.BrowserController
 import com.kenjc.pagekit.engine.ContentExtractor
 import com.kenjc.pagekit.engine.HtmlToMarkdown
@@ -74,6 +76,7 @@ class AndroidPageKitRuntime(
     private val pageCache: PageExpansionCache = FilePageExpansionCache(context),
 ) : PageKitRuntime {
 
+    private val appContext = context.applicationContext
     val loader = WebPageLoader(context, adBlocker)
 
     private val extractor = ContentExtractor(context)
@@ -101,6 +104,42 @@ class AndroidPageKitRuntime(
         val elementHidingRules = adBlocker.elementHidingRules(pageUrl)
         val extracted = withContext(Dispatchers.Main.immediate) {
             extractor.extract(loader.webView, elementHidingRules)
+        }
+
+        // JS 提取失败时（沙盒页面如 raw.githubusercontent.com 的 text/plain 内容，
+        // evaluateJavascript 返回 null），用原生 HTTP 请求获取原始内容作为回退。
+        if (!extracted.ok) {
+            val rawContent = fetchRawContent(pageUrl.ifBlank { request.url })
+            if (rawContent != null) {
+                val markdown = rawContent
+                val title = pageUrl.substringAfterLast('/').ifBlank { pageUrl }
+                val cached = withContext(Dispatchers.IO) {
+                    pageCache.store(pageUrl.ifBlank { request.url }, title, markdown)
+                }
+                val page = withContext(Dispatchers.Default) {
+                    compressor.compress(
+                        request,
+                        PageContext(
+                            title = title,
+                            markdown = markdown,
+                            structured = CompressedPage(
+                                page_id = cached.pageId,
+                                title = title,
+                                url = pageUrl.ifBlank { request.url },
+                            ),
+                            pageId = cached.pageId,
+                            sections = cached.sections,
+                        ),
+                    )
+                }
+                return RuntimePageResult(
+                    page = page,
+                    markdown = markdown,
+                    byline = "",
+                    extractionMode = "raw",
+                    durationMs = System.currentTimeMillis() - startedAt,
+                )
+            }
         }
         check(extracted.ok) { "页面主内容提取失败" }
 
@@ -180,4 +219,36 @@ class AndroidPageKitRuntime(
     }.also { resultCache.invalidateAll() }
 
     fun destroy() = loader.destroy()
+
+    /**
+     * 原生 HTTP 获取原始内容（回退方案）。
+     * 用于沙盒页面（如 raw.githubusercontent.com 的 text/plain），WebView 的 evaluateJavascript 无法执行。
+     * 使用与 WebView 相同的代理配置。
+     */
+    private fun fetchRawContent(url: String): String? = try {
+        val config = SharedPreferencesProxySettings(appContext).load()
+        val urlObj = java.net.URL(url)
+        val (host, port) = if (config.enabled) config.host to config.port else null to 0
+        val connection = if (config.enabled && host != null) {
+            val proxy = java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress(host, port))
+            urlObj.openConnection(proxy) as java.net.HttpURLConnection
+        } else {
+            urlObj.openConnection() as java.net.HttpURLConnection
+        }
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 15_000
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) PageKit/1.0")
+        try {
+            if (connection.responseCode in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                null
+            }
+        } finally {
+            connection.disconnect()
+        }
+    } catch (e: Exception) {
+        null
+    }
 }

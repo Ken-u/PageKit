@@ -31,10 +31,9 @@ interface ProxySettings {
 }
 
 class SharedPreferencesProxySettings(context: Context) : ProxySettings {
-    @Suppress("DEPRECATION")
     private val preferences = context.getSharedPreferences(
         "pagekit_proxy",
-        Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS,
+        Context.MODE_PRIVATE,
     )
 
     override fun load() = ProxyConfig(

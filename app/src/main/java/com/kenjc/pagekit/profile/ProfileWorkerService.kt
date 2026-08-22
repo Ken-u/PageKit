@@ -16,6 +16,8 @@ import com.kenjc.pagekit.engine.adblock.AssetCosmeticRuleRepository
 import com.kenjc.pagekit.engine.adblock.AssetHostsRuleRepository
 import com.kenjc.pagekit.engine.adblock.CompositeAdBlocker
 import com.kenjc.pagekit.engine.adblock.HostsAdBlocker
+import com.kenjc.pagekit.net.SharedPreferencesProxySettings
+import com.kenjc.pagekit.net.WebViewProxyApplier
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
 import com.kenjc.pagekit.session.BrowserSessionComponents
 import com.kenjc.pagekit.session.BrowserSessionFactory
@@ -240,6 +242,9 @@ open class ProfileWorkerService : Service() {
             require(current == null || current == profileId) {
                 "profile slot $slot is already assigned to $current"
             }
+            // 每次分配 profile 时重新应用代理，确保 worker 进程获取最新代理配置
+            // （主进程通过 McpTokenReceiver 写入 SharedPreferences 后，worker 进程可能未及时感知）
+            WebViewProxyApplier.apply(SharedPreferencesProxySettings(this@ProfileWorkerService).load())
             if (registry != null) return
             activeProfileId = profileId
             registry = BrowserSessionRegistry(

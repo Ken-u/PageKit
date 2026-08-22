@@ -46,6 +46,7 @@ class WebPageLoader(
         private const val QUIET_AFTER_COMPLETE_MS = 800L
         private const val LOAD_TIMEOUT_MS = 60_000L
         private const val READINESS_DEBOUNCE_MS = 200L
+        private const val READINESS_MAX_RETRIES = 5  // 5×200ms=1s，超过后 onPageFinished 已触发即视为就绪
         private const val DEFAULT_VIEWPORT_WIDTH = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT = 1920
     }
@@ -53,6 +54,7 @@ class WebPageLoader(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var loadStartAt = 0L
     private var lastProgress = 0
+    private var readinessRetryCount = 0
     private var readinessRunnable: Runnable? = null
     private var timeoutRunnable: Runnable? = null
 
@@ -114,6 +116,7 @@ class WebPageLoader(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             loadStartAt = SystemClock.elapsedRealtime()
             lastProgress = 0
+            readinessRetryCount = 0
             cancelTimers()
             scheduleTimeout()
             state.value = LoadState.Loading(url)
@@ -156,12 +159,21 @@ class WebPageLoader(
                             QUIET_AFTER_COMPLETE_MS,
                         )
 
-                    state.value is LoadState.Loading ->
-                        // readyState 尚未 complete（仍在执行 JS），继续轮询
-                        mainHandler.postDelayed(
-                            { scheduleReadinessCheck() },
-                            READINESS_DEBOUNCE_MS,
-                        )
+                    state.value is LoadState.Loading -> {
+                        readinessRetryCount++
+                        if (readinessRetryCount >= READINESS_MAX_RETRIES) {
+                            // readyState 长时间无法 complete（沙盒页面如 raw.githubusercontent.com
+                            // 的 text/plain 内容，JS evaluate 返回 null）。onPageFinished 已触发，
+                            // 主内容已加载，直接标记就绪。
+                            markReady()
+                        } else {
+                            // readyState 尚未 complete（仍在执行 JS），继续轮询
+                            mainHandler.postDelayed(
+                                { scheduleReadinessCheck() },
+                                READINESS_DEBOUNCE_MS,
+                            )
+                        }
+                    }
                 }
             }
         }.also { mainHandler.postDelayed(it, READINESS_DEBOUNCE_MS) }
