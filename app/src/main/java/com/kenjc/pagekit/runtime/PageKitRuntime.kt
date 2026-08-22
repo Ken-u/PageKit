@@ -81,9 +81,13 @@ class AndroidPageKitRuntime(
     private val searchResultExtractor = SearchResultExtractor()
     private val controller = BrowserController()
 
+    /** 提取结果 LRU：重复 URL 直接命中，交互操作后整体失效（详见 ExtractionResultCache）。 */
+    private val resultCache = ExtractionResultCache()
+
     override suspend fun fetch(request: FetchRequest): RuntimePageResult {
+        resultCache.get(request)?.let { return it }
         loadAndAwait(request.url)
-        return extractCurrent(request)
+        return extractCurrent(request).also { resultCache.put(request, it) }
     }
 
     override suspend fun search(url: String, engine: String, limit: Int): List<SearchHit> {
@@ -141,17 +145,18 @@ class AndroidPageKitRuntime(
     }
 
     override suspend fun listInteractiveElements(): List<String> = controller.snapshot(loader.webView)
-    override suspend fun click(elementId: String): String = controller.click(loader.webView, elementId)
-    override suspend fun type(elementId: String, text: String): String = controller.type(loader.webView, elementId, text)
-    override suspend fun select(elementId: String, value: String): String = controller.select(loader.webView, elementId, value)
-    override suspend fun scroll(dx: Int, dy: Int): String = controller.scroll(loader.webView, dx, dy)
+    override suspend fun click(elementId: String): String = controller.click(loader.webView, elementId).also { resultCache.invalidateAll() }
+    override suspend fun type(elementId: String, text: String): String = controller.type(loader.webView, elementId, text).also { resultCache.invalidateAll() }
+    override suspend fun select(elementId: String, value: String): String = controller.select(loader.webView, elementId, value).also { resultCache.invalidateAll() }
+    override suspend fun scroll(dx: Int, dy: Int): String = controller.scroll(loader.webView, dx, dy).also { resultCache.invalidateAll() }
     override suspend fun annotate(on: Boolean): String = controller.annotate(loader.webView, on)
     override suspend fun title(): String = controller.title(loader.webView)
     override suspend fun inspect(elementId: String): String = controller.inspect(loader.webView, elementId)
-    override suspend fun armSubmitHook(): String = controller.armSubmitHook(loader.webView)
+    override suspend fun armSubmitHook(): String = controller.armSubmitHook(loader.webView).also { resultCache.invalidateAll() }
     override suspend fun currentUrl(): String = withContext(Dispatchers.Main.immediate) { loader.currentUrl() }
 
-    override suspend fun navigate(url: String): Pair<Boolean, String> = loader.navigateAwait(url)
+    override suspend fun navigate(url: String): Pair<Boolean, String> =
+        loader.navigateAwait(url).also { resultCache.invalidateAll() }
 
     override suspend fun goBack(): Pair<Boolean, String> = withContext(Dispatchers.Main.immediate) {
         if (!loader.webView.canGoBack()) {
@@ -172,7 +177,7 @@ class AndroidPageKitRuntime(
                 else -> initial // 超时仍 Loading：回退是否成功以初始判定为准
             }
         }
-    }
+    }.also { resultCache.invalidateAll() }
 
     fun destroy() = loader.destroy()
 }

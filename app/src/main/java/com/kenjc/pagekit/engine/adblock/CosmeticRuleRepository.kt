@@ -68,9 +68,55 @@ class AssetCosmeticRuleRepository(
     }
 
     private fun parseAndValidate(texts: List<String>): CosmeticRuleSet {
+        val fingerprint = RuleSnapshotCache.fingerprint(texts)
+        // 快照命中：直接重建规则集，跳过 3 万条规则的文本解析
+        var fromSnapshot: CosmeticRuleSet? = null
+        val hit = RuleSnapshotCache.read(context, "cosmetic", fingerprint) { input: java.io.DataInputStream ->
+            val generic = List(input.readInt()) { input.readUTF() }
+            val scoped = List(input.readInt()) {
+                CosmeticRuleSet.Rule(readStringSet(input), readStringSet(input), input.readUTF())
+            }
+            val exceptions = List(input.readInt()) {
+                CosmeticRuleSet.Rule(readStringSet(input), readStringSet(input), input.readUTF())
+            }
+            val accepted = input.readInt()
+            val skipped = input.readInt()
+            fromSnapshot = CosmeticRuleSet(generic, scoped, exceptions, CosmeticParseStats(accepted, skipped))
+        }
+        if (hit && fromSnapshot != null) return fromSnapshot!!
+        // 未命中：文本解析 + 写快照供下次启动使用
         val rules = CosmeticRuleParser.parse(texts)
         require(rules.stats.accepted >= MIN_COSMETIC_RULES) { "cosmetic cache has too few supported rules" }
+        runCatching {
+            RuleSnapshotCache.write(context, "cosmetic", fingerprint) { out ->
+                val (generic, scoped, exceptions) = rules.forSnapshot
+                out.writeInt(generic.size)
+                generic.forEach { out.writeUTF(it) }
+                out.writeInt(scoped.size)
+                scoped.forEach {
+                    writeStringSet(out, it.includedDomains)
+                    writeStringSet(out, it.excludedDomains)
+                    out.writeUTF(it.selector)
+                }
+                out.writeInt(exceptions.size)
+                exceptions.forEach {
+                    writeStringSet(out, it.includedDomains)
+                    writeStringSet(out, it.excludedDomains)
+                    out.writeUTF(it.selector)
+                }
+                out.writeInt(rules.stats.accepted)
+                out.writeInt(rules.stats.skippedUnsupported)
+            }
+        }.onFailure { Log.w(TAG, "cosmetic snapshot write failed (non-fatal)", it) }
         return rules
+    }
+
+    private fun readStringSet(input: java.io.DataInputStream): Set<String> =
+        List(input.readInt()) { input.readUTF() }.toSet()
+
+    private fun writeStringSet(out: java.io.DataOutputStream, values: Set<String>) {
+        out.writeInt(values.size)
+        values.forEach { out.writeUTF(it) }
     }
 
     private fun readAsset(assetPath: String): String = context.assets.open(assetPath).use { raw ->

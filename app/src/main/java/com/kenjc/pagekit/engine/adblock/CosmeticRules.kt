@@ -68,6 +68,10 @@ data class CosmeticRuleSet(
         return selected.toList()
     }
 
+    /** 仅供快照序列化使用：原始规则分桶（generic/scoped/exceptions）。 */
+    val forSnapshot: Triple<List<String>, List<Rule>, List<Rule>>
+        get() = Triple(generic, scoped, exceptions)
+
     companion object {
         val EMPTY = CosmeticRuleSet(emptyList(), emptyList(), emptyList(), CosmeticParseStats(0, 0))
     }

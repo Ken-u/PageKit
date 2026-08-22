@@ -49,8 +49,29 @@ class AssetHostsRuleRepository(
     private fun loadCache(): HostsRuleSnapshot {
         val file = context.filesDir.resolve("adblock/$cacheFileName")
         require(file.isFile) { "hosts cache missing" }
-        val snapshot = HostsRuleParser.parse(file.bufferedReader().use { it.readText() }, "online-cache")
+        val text = file.bufferedReader().use { it.readText() }
+        val fingerprint = RuleSnapshotCache.fingerprint(listOf(text))
+        // 快照命中：毫秒级直读已解析域名集
+        var fromSnapshot: HostsRuleSnapshot? = null
+        val hit = RuleSnapshotCache.read(context, "hosts", fingerprint) { input ->
+            val count = input.readInt()
+            val domains = HashSet<String>(count)
+            repeat(count) { domains += input.readUTF() }
+            fromSnapshot = HostsRuleSnapshot(domains, "online-cache", System.currentTimeMillis())
+        }
+        if (hit && fromSnapshot != null) {
+            require(fromSnapshot!!.blockedDomains.size >= MIN_HOST_RULES) { "hosts snapshot too small" }
+            return fromSnapshot!!
+        }
+        // 未命中：文本解析 + 写快照供下次使用
+        val snapshot = HostsRuleParser.parse(text, "online-cache")
         require(snapshot.blockedDomains.size >= MIN_HOST_RULES) { "hosts cache has too few rules" }
+        runCatching {
+            RuleSnapshotCache.write(context, "hosts", fingerprint) { out ->
+                out.writeInt(snapshot.blockedDomains.size)
+                snapshot.blockedDomains.forEach { out.writeUTF(it) }
+            }
+        }.onFailure { Log.w(TAG, "hosts snapshot write failed (non-fatal)", it) }
         return snapshot
     }
 
