@@ -22,12 +22,49 @@ data class CosmeticRuleSet(
         }
     }
 
+    /**
+     * 域名索引：included/excluded 域名 → 规则。查询时只对 host 及其父域做哈希查找，
+     * 匹配成本从 O(全部 scoped 规则) 降到 O(域名层级 + 该域规则数)。
+     * includedDomains 为空的规则（仅含 ~exclusion 的 scoped）仍需全量兜底扫描，单独立桶。
+     */
+    private val scopedIndex: Map<String, List<Rule>> = scoped
+        .filter { it.includedDomains.isNotEmpty() }
+        .flatMap { rule -> rule.includedDomains.map { it to rule } }
+        .groupBy({ it.first }, { it.second })
+
+    private val scopedNoInclude: List<Rule> = scoped.filter { it.includedDomains.isEmpty() }
+
+    private val exceptionIndex: Map<String, List<Rule>> = exceptions
+        .filter { it.includedDomains.isNotEmpty() }
+        .flatMap { rule -> rule.includedDomains.map { it to rule } }
+        .groupBy({ it.first }, { it.second })
+
+    private val exceptionNoInclude: List<Rule> = exceptions.filter { it.includedDomains.isEmpty() }
+
+    /** host 及其父域（如 a.b.com → [a.b.com, b.com, com]），供逐级查索引。 */
+    private fun hostAndParents(host: String): Sequence<String> = sequence {
+        var current = host
+        while (true) {
+            yield(current)
+            val dot = current.indexOf('.')
+            if (dot < 0) return@sequence
+            current = current.substring(dot + 1)
+        }
+    }
+
+    /** 索引命中 + 无正向域名规则的线性兜底；保持与全量扫描完全相同的结果集。 */
+    private fun candidatesFrom(index: Map<String, List<Rule>>, noInclude: List<Rule>, normalized: String): Sequence<Rule> =
+        hostAndParents(normalized)
+            .flatMap { index[it].orEmpty().asSequence() }
+            .plus(noInclude.asSequence())
+            .filter { it.appliesTo(normalized) }
+
     fun selectorsFor(host: String): List<String> {
         val normalized = normalizeHost(host)
         if (normalized.isEmpty()) return emptyList()
         val selected = LinkedHashSet(generic)
-        scoped.asSequence().filter { it.appliesTo(normalized) }.forEach { selected += it.selector }
-        exceptions.asSequence().filter { it.appliesTo(normalized) }.forEach { selected -= it.selector }
+        candidatesFrom(scopedIndex, scopedNoInclude, normalized).forEach { selected += it.selector }
+        candidatesFrom(exceptionIndex, exceptionNoInclude, normalized).forEach { selected -= it.selector }
         return selected.toList()
     }
 

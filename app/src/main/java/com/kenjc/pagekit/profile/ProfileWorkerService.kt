@@ -24,6 +24,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -61,8 +62,14 @@ open class ProfileWorkerService : Service() {
     }
 
     private val binder = object : IProfileWorker.Stub() {
+        /**
+         * binder 线程只做入队 + 挂起等待唤醒，真正的执行在 scope 协程里跑：
+         * binder 线程池（上限 ~16）不再被长任务占满，高并发时后来请求不会被池外阻塞。
+         * 等待经 CompletionDeferred：主端 readResponse 逻辑不变（fd 内容不变）。
+         */
         override fun execute(requestJson: String): ParcelFileDescriptor {
-            val response = runBlocking { dispatcher.execute(requestJson) }
+            val deferred = scope.async { dispatcher.execute(requestJson) }
+            val response = runBlocking { deferred.await() }
             val directory = cacheDir.resolve("profile-ipc").apply { mkdirs() }
             val file = File.createTempFile("response-", ".json", directory)
             file.writeText(response)

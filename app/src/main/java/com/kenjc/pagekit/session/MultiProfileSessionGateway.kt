@@ -12,6 +12,7 @@ import com.kenjc.pagekit.profile.ProfileWorkerRequest
 import com.kenjc.pagekit.profile.ProfileWorkerResponse
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import java.security.SecureRandom
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -112,6 +113,11 @@ class MultiProfileSessionGateway(
     suspend fun setMaxSessions(value: Int) {
         localSessions.maxSessions = value
         localSessions.shrinkToLimit()
+    }
+
+    /** 启动默认 profile 的空闲 session 自动回收（每 10 分钟，回收闲置超 15 分钟的池 session）。 */
+    fun startIdleReclaimer(scope: CoroutineScope) {
+        localSessions.startIdleReclaimer(scope)
     }
 
     override suspend fun search(sessionId: String, query: String, engine: String, limit: Int): List<SearchHit> =

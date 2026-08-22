@@ -2,9 +2,14 @@ package com.kenjc.pagekit.session
 
 import android.webkit.WebView
 import com.kenjc.pagekit.api.DefaultPageKitApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -290,6 +295,44 @@ class BrowserSessionRegistry(
             }
         }
     }
+
+    /**
+     * 空闲回收：关闭超过 [idleMs] 未被访问的池 session（tryLock 探测空闲，忙的跳过）。
+     * default 与 busy session 永不回收；至少保留 [keepMin] 个池 session 避免频繁重建。
+     */
+    suspend fun closeIdle(idleMs: Long, keepMin: Int = 1) {
+        val now = System.currentTimeMillis()
+        val victims = registryMutex.withLock {
+            val pool = entries.entries
+                .filter { it.key != DEFAULT_SESSION_ID && it.value.isDefault.not() }
+                .sortedBy { it.value.lastAccessEpochMs }
+            var closable = pool.count() - keepMin
+            pool.mapNotNull { (id, entry) ->
+                if (closable <= 0) return@mapNotNull null
+                if (now - entry.lastAccessEpochMs < idleMs) return@mapNotNull null
+                if (!entry.operationMutex.tryLock()) return@mapNotNull null
+                entries.remove(id)
+                closable--
+                entry
+            }
+        }
+        victims.forEach { entry ->
+            try {
+                entry.components.destroy()
+            } finally {
+                entry.operationMutex.unlock()
+            }
+        }
+    }
+
+    /** 周期性空闲回收入口；由拥有者（gateway/应用）以固定间隔调用。 */
+    fun startIdleReclaimer(scope: CoroutineScope, intervalMs: Long = 10 * 60_000L, idleMs: Long = 15 * 60_000L): Job =
+        scope.launch {
+            while (isActive) {
+                delay(intervalMs)
+                runCatching { closeIdle(idleMs) }
+            }
+        }
 
     private fun sessionId(entry: Entry): String =
         entries.entries.firstOrNull { it.value === entry }?.key

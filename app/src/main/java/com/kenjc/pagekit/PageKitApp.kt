@@ -127,6 +127,7 @@ class PageKitApp : Application() {
             },
         )
         sessionGateway = MultiProfileSessionGateway(this, localSessions, ProfileSlotStore(this))
+            .also { it.startIdleReclaimer(applicationScope) }
         mcpServer = PageKitMcpServerController(
             usageTools = PageKitUsageTools(sessionGateway),
             managementTools = PageKitManagementTools(sessionGateway, llmSettings, proxySettings),

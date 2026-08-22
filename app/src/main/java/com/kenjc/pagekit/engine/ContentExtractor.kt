@@ -29,11 +29,15 @@ class ContentExtractor(private val context: Context) {
         val contentHtml: String,
     )
 
+    /** Readability.js 内容不变：读一次缓存字符串，避免每次提取重复 asset IO 与大字符串分配。 */
+    private val readabilityJs: String by lazy {
+        context.assets.open("readability/Readability.js").bufferedReader().use { it.readText() }
+    }
+
     /** 每次提取都注入：同 URL reload 也会创建全新的 JS document/global。 */
     private fun ensureReadability(webView: WebView) {
-        val js = context.assets.open("readability/Readability.js").bufferedReader().use { it.readText() }
         // 顶层 var 在全局作用域求值 → window.Readability；尾部 module.exports 分支在浏览器上下文自动跳过
-        webView.evaluateJavascript(js, null)
+        webView.evaluateJavascript(readabilityJs, null)
     }
 
     suspend fun extract(webView: WebView, elementHidingRules: List<String> = emptyList()): Result {
