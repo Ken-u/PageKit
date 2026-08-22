@@ -115,6 +115,9 @@ Release 签名使用以下 GitHub Actions Secrets，私钥和密码均不得提�
 ## adb 验证通道
 
 ```bash
+# 取 MCP token（release 包无法 run-as 时用；PIN 首次自动生成）
+adb shell 'am broadcast -a com.kenjc.pagekit.MCP_TOKEN -n com.kenjc.pagekit/.mcp.McpTokenReceiver >/dev/null; logcat -d -s PageKit.McpToken:I | tail -1'
+
 # 加载页面并自动提取（结果落盘 files/last_result.txt）
 adb shell am start -n com.kenjc.pagekit/.MainActivity \
   -d "file:///android_asset/test/testpage.html" --ez extract true

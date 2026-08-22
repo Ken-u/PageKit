@@ -34,6 +34,14 @@
             android:name=".ResultTunnelReceiver"
             android:exported="true" />
 
+        <receiver
+            android:name=".mcp.McpTokenReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.kenjc.pagekit.MCP_TOKEN" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".mcp.McpServerService"
             android:exported="false"
