@@ -143,12 +143,28 @@ adb shell am start -n com.kenjc.pagekit/.MainActivity \
 
 ## MCP（V2）
 
-打开应用后，通知栏可见的前台服务会在设备回环地址提供 Streamable HTTP：
-`http://127.0.0.1:3000/mcp`。服务只绑定回环地址，并要求应用首次启动时生成的
-256-bit Bearer token；浏览器客户端的 `Origin` 也必须是 localhost/回环地址。
+打开应用后，通知栏可见的前台服务会提供 Streamable HTTP：`http://<bind>:3000/mcp`。
+服务**默认绑定 `0.0.0.0`（回环、局域网、热点客户端均可访问）**，安全性完全依赖首次启动
+生成的 256-bit Bearer token；浏览器客户端的 `Origin` 也必须是 localhost/回环地址。
+绑定地址本身不是安全边界——如需收窄监听面，可在启动时指定绑定模式：
 
 ```bash
-adb forward tcp:19300 tcp:3000
+# 默认（0.0.0.0，行为与历史版本一致）
+adb shell am start -n com.kenjc.pagekit/.MainActivity
+
+# 仅绑定局域网 IPv4（如 192.168.x.x；此时 adb forward 失效，需从局域网直连，
+# 未连 Wi-Fi 时退回 127.0.0.1）
+adb shell am start -n com.kenjc.pagekit/.MainActivity --es mcp_bind lan
+
+# 仅绑定本机回环（仅 adb forward / 同设备进程可达）
+adb shell am start -n com.kenjc.pagekit/.MainActivity --es mcp_bind loopback
+```
+
+指定的模式会被记住，服务被系统拉回时沿用；再次显式传参可切换。通知栏会显示当前
+实际绑定的地址。
+
+```bash
+adb forward tcp:19300 tcp:3000   # mcp_bind=loopback/all 时可用
 TOKEN=$(adb shell 'run-as com.kenjc.pagekit cat files/mcp_token.txt' | tr -d '\r\n')
 
 # 一键验证 401/403、initialize、tools/list 和前台服务生命周期

@@ -14,9 +14,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -25,6 +29,9 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,9 +45,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kenjc.pagekit.PageKitApp
 import com.kenjc.pagekit.compress.PromptBuilder
@@ -54,6 +63,7 @@ private val VIEW_TABS = listOf("网页", "Markdown", "JSON", "Prompt")
 fun HomeScreen(
     initialUrl: String? = null,
     autoExtract: Boolean = false,
+    onEnterScreensaver: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 进程级单例 ViewModel：UI / ResultTunnelReceiver 共享同一 WebView 与提取状态
@@ -69,6 +79,11 @@ fun HomeScreen(
     val extractState by vm.extractState.collectAsStateWithLifecycle()
     val compressionMode by vm.compressionMode.collectAsStateWithLifecycle()
     val focusIntent by vm.focusIntent.collectAsStateWithLifecycle()
+    val proxyConfig by vm.proxyConfig.collectAsStateWithLifecycle()
+    val mcpToken by vm.mcpToken.collectAsStateWithLifecycle()
+    val screensaverTimeoutMs by vm.screensaverTimeoutMs.collectAsStateWithLifecycle()
+
+    var showProxyDialog by rememberSaveable { mutableStateOf(false) }
 
     // intent 驱动：初始 URL + 就绪后自动提取（adb/MCP 验证入口；提取在 VM 侧自动触发）
     LaunchedEffect(initialUrl, autoExtract) {
@@ -83,7 +98,19 @@ fun HomeScreen(
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("PageKit") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("PageKit") },
+                actions = {
+                    IconButton(onClick = onEnterScreensaver) {
+                        Icon(Icons.Default.Lock, contentDescription = "立即进入屏保")
+                    }
+                    IconButton(onClick = { showProxyDialog = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "设置")
+                    }
+                },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -196,6 +223,21 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showProxyDialog) {
+        ProxySettingsDialog(
+            config = proxyConfig,
+            mcpToken = mcpToken,
+            screensaverTimeoutMs = screensaverTimeoutMs,
+            onSaveScreensaverTimeout = { vm.saveScreensaverTimeout(it) },
+            onResetToken = { vm.resetMcpToken() },
+            onDismiss = { showProxyDialog = false },
+            onSave = { enabled, host, port, bypass ->
+                vm.saveProxyConfig(enabled, host, port, bypass)
+                showProxyDialog = false
+            },
+        )
     }
 }
 
@@ -426,3 +468,149 @@ private fun BoxScope.ElementsPanel(vm: HomeViewModel) {
         ) { Text(if (expanded) "×" else "[e]") }
     }
 }
+
+@Composable
+private fun ProxySettingsDialog(
+    config: com.kenjc.pagekit.net.ProxyConfig,
+    mcpToken: String,
+    screensaverTimeoutMs: Long,
+    onSaveScreensaverTimeout: (Long) -> Unit,
+    onResetToken: () -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (enabled: Boolean, host: String, port: Int, bypass: String) -> Unit,
+) {
+    var enabled by rememberSaveable { mutableStateOf(config.enabled) }
+    var host by rememberSaveable { mutableStateOf(config.host) }
+    var port by rememberSaveable { mutableStateOf(if (config.port > 0) config.port.toString() else "") }
+    var bypass by rememberSaveable { mutableStateOf(config.bypass) }
+    var portError by remember { mutableStateOf(false) }
+    var tokenCopied by remember { mutableStateOf(false) }
+    var confirmResetToken by remember { mutableStateOf(false) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    val portNum = port.toIntOrNull() ?: 0
+                    onSave(enabled, host.trim(), portNum, bypass.trim())
+                },
+                enabled = !enabled || (host.isNotBlank() && portNumValid(port, portError)),
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+        title = { Text("代理设置") },
+        text = {
+            Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = enabled, onCheckedChange = { enabled = it })
+                    Text("启用代理（仅 WebView）")
+                }
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("代理地址") },
+                    placeholder = { Text("如 127.0.0.1") },
+                    singleLine = true,
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = {
+                        port = it.filter { c -> c.isDigit() }
+                        portError = port.isNotBlank() && (port.toIntOrNull()?.let { p -> p !in 1..65535 } ?: true)
+                    },
+                    label = { Text("端口") },
+                    placeholder = { Text("如 7890") },
+                    singleLine = true,
+                    isError = portError,
+                    supportingText = if (portError) ({ Text("端口范围 1-65535") }) else null,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = bypass,
+                    onValueChange = { bypass = it },
+                    label = { Text("不走代理的地址") },
+                    placeholder = { Text("如 localhost;10.0.0.0/8;*.local") },
+                    supportingText = { Text("分号分隔，留空表示全部走代理") },
+                    singleLine = true,
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                androidx.compose.material3.HorizontalDivider()
+                Text(
+                    "屏保闲置进入时间",
+                    style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val options = remember {
+                        listOf(30_000L to "30秒", 60_000L to "1分", 120_000L to "2分", 300_000L to "5分", 0L to "关闭")
+                    }
+                    options.forEach { (value, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = screensaverTimeoutMs == value,
+                            onClick = { onSaveScreensaverTimeout(value) },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                    }
+                }
+                Text(
+                    "顶栏月亮按钮可立即进入；应用启动后也会立即进入屏保。",
+                    fontSize = 12.sp,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                androidx.compose.material3.HorizontalDivider()
+                Text(
+                    "MCP 访问 Token",
+                    style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    mcpToken,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "重启与应用更新均不变；重置后立即生效，旧 Token 立即失效。",
+                    fontSize = 12.sp,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row {
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(mcpToken))
+                            tokenCopied = true
+                        },
+                    ) { Text(if (tokenCopied) "已复制" else "复制") }
+                    TextButton(onClick = { confirmResetToken = true }) { Text("重置") }
+                }
+            }
+        },
+    )
+
+    if (confirmResetToken) {
+        AlertDialog(
+            onDismissRequest = { confirmResetToken = false },
+            title = { Text("重置 MCP Token？") },
+            text = { Text("将生成新 Token 并立即生效，正在使用旧 Token 的客户端会全部失效，需要重新配置。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onResetToken()
+                    confirmResetToken = false
+                }) { Text("重置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetToken = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+private fun portNumValid(port: String, hasError: Boolean): Boolean =
+    !hasError && port.toIntOrNull()?.let { it in 1..65535 } ?: false

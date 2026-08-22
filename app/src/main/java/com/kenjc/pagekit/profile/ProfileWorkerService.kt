@@ -40,7 +40,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlin.coroutines.resume
 
@@ -179,6 +181,33 @@ open class ProfileWorkerService : Service() {
                     )
                 }
             }
+            ProfileWorkerOperations.SELECT -> sessions.withApi(request.requiredSessionId()) { api ->
+                buildJsonObject {
+                    put(
+                        "ok",
+                        selectOk(
+                            api.selectResult(
+                                request.arguments.requiredString("element_id"),
+                                request.arguments.requiredString("value"),
+                            ),
+                        ),
+                    )
+                }
+            }
+            ProfileWorkerOperations.CURRENT_URL -> sessions.withApi(request.requiredSessionId()) { api ->
+                buildJsonObject { put("value", api.currentUrl()) }
+            }
+            ProfileWorkerOperations.NAVIGATE -> sessions.withApi(request.requiredSessionId()) { api ->
+                val (ok, url) = api.navigate(request.arguments.requiredString("url"))
+                buildJsonObject { put("ok", ok); put("url", url) }
+            }
+            ProfileWorkerOperations.GO_BACK -> sessions.withApi(request.requiredSessionId()) { api ->
+                val (ok, url) = api.goBack()
+                buildJsonObject { put("ok", ok); put("url", url) }
+            }
+            ProfileWorkerOperations.SESSION_CLOSE_IDLE -> buildJsonObject {
+                put("closed", JsonArray(sessions.closeIdle(request.arguments.long("idle_ms") ?: 0L).map(::JsonPrimitive)))
+            }
             ProfileWorkerOperations.SCROLL -> sessions.withApi(request.requiredSessionId()) { api ->
                 buildJsonObject {
                     put("ok", api.scroll(request.arguments.int("dx") ?: 0, request.arguments.int("dy") ?: 600))
@@ -277,7 +306,12 @@ open class ProfileWorkerService : Service() {
             requireNotNull(string(name)) { "missing argument: $name" }
 
         private fun JsonObject.int(name: String): Int? = get(name)?.jsonPrimitive?.intOrNull
+        private fun JsonObject.long(name: String): Long? = get(name)?.jsonPrimitive?.longOrNull
         private fun JsonObject.boolean(name: String): Boolean? = get(name)?.jsonPrimitive?.booleanOrNull
+
+        private fun selectOk(result: String): Boolean = runCatching {
+            Json.parseToJsonElement(result).jsonObject["ok"]?.jsonPrimitive?.content == "true"
+        }.getOrDefault(false)
     }
 }
 

@@ -10,6 +10,17 @@ PageKit 把浏览器隔离拆成两层：
 `default` Profile 位于主进程，包含 UI 的 `default` Session，并可再创建最多 3 个离屏 Session。
 另有 3 个固定 worker 进程槽，每个槽承载一个隔离 Profile，每个 Profile 最多 4 个 Session。
 
+Session 生命周期管理：
+
+- `session_create` 在配额满时默认失败；调用方无法先回收时可在管理端用
+  `session_close_idle`（默认阈值 10 分钟空闲）批量释放非默认 session，不会影响
+  正在执行操作的 session（持有操作锁的 session 会被跳过而非等待）。
+- `browser_back` 返回上一页并等待终态；`browser_url` 返回当前最终 URL 与标题；
+  `browser_navigate` 用于 SPA 内跳转（如搜索框提交后的结果页），返回重定向后的
+  最终地址。`browser_select` 支持按值或可见文本选择 `<select>` 下拉项。
+- 定位私网/本机地址时 `browser_navigate` 会在日志中记录警告（advisory，不阻断）——
+  需要严格内网隔离时应由上游策略拦截。
+
 隔离 Profile 进程在 Application 初始化最早阶段、创建任何 WebView 之前调用
 `WebView.setDataDirectorySuffix("pagekit_profile_N")`。主进程通过 AIDL 调用 worker；返回正文使用
 `ParcelFileDescriptor` 文件通道，因此不会把大篇 Markdown 塞进 Binder transaction。

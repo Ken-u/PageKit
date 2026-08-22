@@ -15,7 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 
-/** 用户可见且可停止的 localhost MCP 服务生命周期。 */
+/** 用户可见且可停止的 MCP 服务生命周期；绑定地址由 `--es mcp_bind` 决定（默认 0.0.0.0）。 */
 class McpServerService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -30,8 +30,16 @@ class McpServerService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, notification())
-        (application as PageKitApp).mcpServer.start(serviceScope)
+        // START_STICKY 被系统拉回时 intent 为 null，回退到上次显式指定的绑定模式。
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (intent?.hasExtra(EXTRA_BIND_MODE) == true) {
+            prefs.edit().putString(PREF_BIND_MODE, intent.getStringExtra(EXTRA_BIND_MODE) ?: "").apply()
+        }
+        val savedMode = prefs.getString(PREF_BIND_MODE, null)
+        val bindMode = McpBindMode.parse(intent?.getStringExtra(EXTRA_BIND_MODE) ?: savedMode)
+        val bindHost = McpBindHosts.resolve(bindMode ?: McpBindMode.ALL)
+        startForeground(NOTIFICATION_ID, notification(bindHost))
+        (application as PageKitApp).mcpServer.start(serviceScope, bindHost)
         return START_STICKY
     }
 
@@ -58,7 +66,7 @@ class McpServerService : Service() {
         )
     }
 
-    private fun notification(): Notification {
+    private fun notification(bindHost: String): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             0,
@@ -74,7 +82,7 @@ class McpServerService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
             .setContentTitle("PageKit MCP 正在运行")
-            .setContentText("127.0.0.1:3000/mcp · 仅本机令牌访问")
+            .setContentText("$bindHost:3000/mcp · 需 Bearer token 访问")
             .setContentIntent(openIntent)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "停止", stopIntent).build())
@@ -85,5 +93,10 @@ class McpServerService : Service() {
         private const val CHANNEL_ID = "pagekit_mcp"
         private const val NOTIFICATION_ID = 3000
         const val ACTION_STOP = "com.kenjc.pagekit.mcp.STOP"
+
+        /** 启动 Service 时指定绑定模式：`all`（默认）/ `lan` / `loopback`，见 [McpBindMode]。 */
+        const val EXTRA_BIND_MODE = "mcp_bind"
+        private const val PREFS_NAME = "pagekit_mcp"
+        private const val PREF_BIND_MODE = "bind_mode"
     }
 }

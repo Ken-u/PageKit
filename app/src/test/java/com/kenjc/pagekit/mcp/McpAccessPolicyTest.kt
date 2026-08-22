@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class McpAccessPolicyTest {
-    private val policy = McpAccessPolicy("correct-secret-token")
+    private val policy = McpAccessPolicy({ "correct-secret-token" })
 
     @Test
     fun `缺失或错误 token 被拒绝`() {
@@ -17,6 +17,16 @@ class McpAccessPolicyTest {
     fun `正确 token 可从原生客户端访问`() {
         assertEquals(McpAccessDecision.ALLOW, policy.evaluate("Bearer correct-secret-token", null))
         assertEquals(McpAccessDecision.ALLOW, policy.evaluate("bearer correct-secret-token", null))
+    }
+
+    @Test
+    fun `token 重置后立即用新值校验`() {
+        var current = "old-token"
+        val dynamic = McpAccessPolicy({ current })
+        assertEquals(McpAccessDecision.ALLOW, dynamic.evaluate("Bearer old-token", null))
+        current = "new-token"
+        assertEquals(McpAccessDecision.UNAUTHORIZED, dynamic.evaluate("Bearer old-token", null))
+        assertEquals(McpAccessDecision.ALLOW, dynamic.evaluate("Bearer new-token", null))
     }
 
     @Test

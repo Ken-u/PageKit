@@ -22,7 +22,11 @@ import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+
+/** goBack 等纯历史导航的等待上限；导航型操作走 WebPageLoader 自身的 60s 上限。 */
+private const val NAV_BACK_TIMEOUT_MS = 15_000L
 
 /** 一次完整提取的内部结果；UI 与 MCP 复用同一份页面产物。 */
 @Serializable
@@ -47,12 +51,19 @@ interface PageKitRuntime {
     suspend fun listInteractiveElements(): List<String>
     suspend fun click(elementId: String): String
     suspend fun type(elementId: String, text: String): String
+    suspend fun select(elementId: String, value: String): String
     suspend fun scroll(dx: Int, dy: Int): String
     suspend fun annotate(on: Boolean): String
     suspend fun title(): String
     suspend fun inspect(elementId: String): String
     suspend fun armSubmitHook(): String
     suspend fun currentUrl(): String
+
+    /** 导航到 URL 并等待终态；返回 (是否 Ready, 最终 URL——含重定向)。 */
+    suspend fun navigate(url: String): Pair<Boolean, String>
+
+    /** 历史后退一页并等待终态；无历史时返回 (false, 当前 URL)。 */
+    suspend fun goBack(): Pair<Boolean, String>
 }
 
 /** WebView 驱动的 Android 运行时。 */
@@ -132,12 +143,36 @@ class AndroidPageKitRuntime(
     override suspend fun listInteractiveElements(): List<String> = controller.snapshot(loader.webView)
     override suspend fun click(elementId: String): String = controller.click(loader.webView, elementId)
     override suspend fun type(elementId: String, text: String): String = controller.type(loader.webView, elementId, text)
+    override suspend fun select(elementId: String, value: String): String = controller.select(loader.webView, elementId, value)
     override suspend fun scroll(dx: Int, dy: Int): String = controller.scroll(loader.webView, dx, dy)
     override suspend fun annotate(on: Boolean): String = controller.annotate(loader.webView, on)
     override suspend fun title(): String = controller.title(loader.webView)
     override suspend fun inspect(elementId: String): String = controller.inspect(loader.webView, elementId)
     override suspend fun armSubmitHook(): String = controller.armSubmitHook(loader.webView)
     override suspend fun currentUrl(): String = withContext(Dispatchers.Main.immediate) { loader.currentUrl() }
+
+    override suspend fun navigate(url: String): Pair<Boolean, String> = loader.navigateAwait(url)
+
+    override suspend fun goBack(): Pair<Boolean, String> = withContext(Dispatchers.Main.immediate) {
+        if (!loader.webView.canGoBack()) {
+            false to loader.currentUrl()
+        } else {
+            // 退一页通常不会触发 loadUrl 级别的网络等待，直接退并等待终态。
+            loader.webView.goBack()
+            loader.state.value = LoadState.Loading(loader.currentUrl())
+            true to loader.currentUrl()
+        }
+    }.let { initial ->
+        withTimeoutOrNull(NAV_BACK_TIMEOUT_MS) {
+            loader.state.first { it !is LoadState.Loading }
+        }.let { terminal ->
+            when (terminal) {
+                is LoadState.Ready -> true to terminal.url
+                is LoadState.Failed -> false to terminal.url
+                else -> initial // 超时仍 Loading：回退是否成功以初始判定为准
+            }
+        }
+    }
 
     fun destroy() = loader.destroy()
 }

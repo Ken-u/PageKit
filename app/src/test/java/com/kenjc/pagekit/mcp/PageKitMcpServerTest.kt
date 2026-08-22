@@ -7,6 +7,8 @@ import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.compress.LlmConfig
 import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.engine.SearchHit
+import com.kenjc.pagekit.net.ProxyConfig
+import com.kenjc.pagekit.net.ProxySettings
 import com.kenjc.pagekit.runtime.PageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import com.kenjc.pagekit.session.SingleSessionGateway
@@ -14,6 +16,8 @@ import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.testing.ChannelTransport
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -26,10 +30,10 @@ import org.junit.Test
 class PageKitMcpServerTest {
 
     @Test
-    fun `官方 MCP client 可发现并调用 PageKit tools`() = runBlocking {
+    fun `使用端 MCP client 可发现并调用 usage tools`() = runBlocking {
         val runtime = FakeRuntime()
-        val settings = FakeSettings()
-        val server = PageKitMcpTools(SingleSessionGateway(DefaultPageKitApi(runtime)), settings).createServer()
+        val gateway = SingleSessionGateway(DefaultPageKitApi(runtime))
+        val server = PageKitUsageTools(gateway).createServer()
         val transports = ChannelTransport.createLinkedPair()
         server.createSession(transports.serverTransport)
         val client = Client(Implementation(name = "pagekit-test", version = "1"))
@@ -38,9 +42,9 @@ class PageKitMcpServerTest {
         val names = client.listTools().tools.map { it.name }.toSet()
         assertEquals(
             setOf(
-                "webfetch", "websearch", "expand", "browser_snapshot", "browser_click", "browser_type",
-                "browser_scroll", "llm_status", "llm_configure", "profile_create", "profile_list",
-                "profile_delete", "session_create", "session_list", "session_close",
+                "webfetch", "websearch", "expand",
+                "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
+                "browser_select", "browser_navigate", "browser_back", "browser_url",
             ),
             names,
         )
@@ -48,21 +52,6 @@ class PageKitMcpServerTest {
         val snapshot = client.callTool("browser_snapshot", emptyMap())
         assertFalse(snapshot.isError == true)
         assertNotNull(snapshot.structuredContent?.get("elements"))
-
-        val profiles = client.callTool("profile_list", emptyMap())
-        assertFalse(profiles.isError == true)
-        assertEquals(
-            "default",
-            profiles.structuredContent?.get("profiles")?.jsonArray?.single()?.jsonObject
-                ?.get("profileId")?.jsonPrimitive?.content,
-        )
-        val sessions = client.callTool("session_list", emptyMap())
-        assertFalse(sessions.isError == true)
-        assertEquals(
-            "default",
-            sessions.structuredContent?.get("sessions")?.jsonArray?.single()?.jsonObject
-                ?.get("sessionId")?.jsonPrimitive?.content,
-        )
 
         val fetch = client.callTool(
             name = "webfetch",
@@ -92,6 +81,55 @@ class PageKitMcpServerTest {
         assertFalse(expanded.isError == true)
         assertEquals("s1", expanded.structuredContent?.get("section_id")?.toString()?.trim('"'))
 
+        val rejected = client.callTool(
+            name = "webfetch",
+            arguments = mapOf("url" to "file:///data/local/tmp/secret"),
+        )
+        assertTrue(rejected.isError == true)
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `管理端 MCP client 可发现并调用 management tools`() = runBlocking {
+        val runtime = FakeRuntime()
+        val gateway = SingleSessionGateway(DefaultPageKitApi(runtime))
+        val settings = FakeLlmSettings()
+        val proxySettings = FakeProxySettings()
+        val server = PageKitManagementTools(gateway, settings, proxySettings, onProxyChanged = {}).createServer()
+        val transports = ChannelTransport.createLinkedPair()
+        server.createSession(transports.serverTransport)
+        val client = Client(Implementation(name = "pagekit-admin-test", version = "1"))
+        client.connect(transports.clientTransport)
+
+        val names = client.listTools().tools.map { it.name }.toSet()
+        assertEquals(
+            setOf(
+                "profile_create", "profile_list", "profile_delete",
+                "session_create", "session_list", "session_close", "session_close_idle",
+                "llm_status", "llm_configure",
+                "proxy_status", "proxy_configure",
+            ),
+            names,
+        )
+
+        val profiles = client.callTool("profile_list", emptyMap())
+        assertFalse(profiles.isError == true)
+        assertEquals(
+            "default",
+            profiles.structuredContent?.get("profiles")?.jsonArray?.single()?.jsonObject
+                ?.get("profileId")?.jsonPrimitive?.content,
+        )
+
+        val sessions = client.callTool("session_list", emptyMap())
+        assertFalse(sessions.isError == true)
+        assertEquals(
+            "default",
+            sessions.structuredContent?.get("sessions")?.jsonArray?.single()?.jsonObject
+                ?.get("sessionId")?.jsonPrimitive?.content,
+        )
+
         val configured = client.callTool(
             "llm_configure",
             mapOf("endpoint" to "https://llm.example/v1", "model" to "test-model", "api_key" to "secret"),
@@ -100,11 +138,18 @@ class PageKitMcpServerTest {
         assertEquals("secret", settings.config.apiKey)
         assertFalse(configured.content.toString().contains("secret"))
 
-        val rejected = client.callTool(
-            name = "webfetch",
-            arguments = mapOf("url" to "file:///data/local/tmp/secret"),
+        val proxyStatus = client.callTool("proxy_status", emptyMap())
+        assertFalse(proxyStatus.isError == true)
+        assertEquals(false, proxyStatus.structuredContent?.get("enabled")?.jsonPrimitive?.booleanOrNull)
+
+        val proxyConfigured = client.callTool(
+            "proxy_configure",
+            mapOf("enabled" to true, "host" to "127.0.0.1", "port" to 7890),
         )
-        assertTrue(rejected.isError == true)
+        assertFalse(proxyConfigured.isError == true)
+        assertEquals(true, proxyConfigured.structuredContent?.get("enabled")?.jsonPrimitive?.booleanOrNull)
+        assertEquals("127.0.0.1", proxyConfigured.structuredContent?.get("host")?.jsonPrimitive?.content)
+        assertEquals(7890, proxyConfigured.structuredContent?.get("port")?.jsonPrimitive?.intOrNull)
 
         client.close()
         server.close()
@@ -139,15 +184,26 @@ class PageKitMcpServerTest {
         override suspend fun inspect(elementId: String): String = ok()
         override suspend fun armSubmitHook(): String = ok()
         override suspend fun currentUrl(): String = lastRequest?.url.orEmpty()
+        override suspend fun select(elementId: String, value: String): String = ok()
+        override suspend fun navigate(url: String): Pair<Boolean, String> = true to url
+        override suspend fun goBack(): Pair<Boolean, String> = false to (lastRequest?.url.orEmpty())
 
         private fun ok() = """{"ok":true}"""
     }
 
-    private class FakeSettings : LlmSettings {
+    private class FakeLlmSettings : LlmSettings {
         var config = LlmConfig()
         override fun load(): LlmConfig = config
         override fun save(config: LlmConfig) {
             this.config = config.validated()
+        }
+    }
+
+    private class FakeProxySettings : ProxySettings {
+        var config = ProxyConfig()
+        override fun load(): ProxyConfig = config
+        override fun save(config: ProxyConfig) {
+            this.config = config
         }
     }
 }

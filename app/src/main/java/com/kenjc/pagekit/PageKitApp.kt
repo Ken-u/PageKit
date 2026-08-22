@@ -8,7 +8,8 @@ import com.kenjc.pagekit.engine.adblock.CompositeAdBlocker
 import com.kenjc.pagekit.engine.adblock.HostsAdBlocker
 import com.kenjc.pagekit.engine.adblock.RuleUpdateScheduler
 import com.kenjc.pagekit.mcp.PageKitMcpServerController
-import com.kenjc.pagekit.mcp.PageKitMcpTools
+import com.kenjc.pagekit.mcp.PageKitManagementTools
+import com.kenjc.pagekit.mcp.PageKitUsageTools
 import com.kenjc.pagekit.mcp.McpAccessPolicy
 import com.kenjc.pagekit.mcp.McpTokenStore
 import com.kenjc.pagekit.provider.KimiWebSearchAdapter
@@ -18,6 +19,8 @@ import com.kenjc.pagekit.profile.ProfileSlotStore
 import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.OpenAiCompatibleCompressor
 import com.kenjc.pagekit.compress.SharedPreferencesLlmSettings
+import com.kenjc.pagekit.net.SharedPreferencesProxySettings
+import com.kenjc.pagekit.net.WebViewProxyApplier
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
 import com.kenjc.pagekit.session.BrowserSessionComponents
 import com.kenjc.pagekit.session.BrowserSessionFactory
@@ -64,6 +67,9 @@ class PageKitApp : Application() {
     lateinit var llmSettings: SharedPreferencesLlmSettings
         private set
 
+    lateinit var proxySettings: SharedPreferencesProxySettings
+        private set
+
     lateinit var sessionGateway: MultiProfileSessionGateway
         private set
 
@@ -72,6 +78,9 @@ class PageKitApp : Application() {
     override fun onCreate() {
         super.onCreate()
         profileWorkerSlot = ProfileProcess.prepareWebViewDataDirectory(packageName)
+        // 主进程和 worker 进程都持有 WebView，各自应用代理配置到当前进程的 WebView 网络栈。
+        proxySettings = SharedPreferencesProxySettings(this)
+        WebViewProxyApplier.apply(proxySettings.load())
         if (profileWorkerSlot != null) return
         hostsRuleRepository = AssetHostsRuleRepository(this).also { it.start(applicationScope) }
         cosmeticRuleRepository = AssetCosmeticRuleRepository(this).also { it.start(applicationScope) }
@@ -82,6 +91,7 @@ class PageKitApp : Application() {
         )
         val adBlocker = CompositeAdBlocker(hostsAdBlocker, cosmeticRuleRepository)
         llmSettings = SharedPreferencesLlmSettings(this)
+        mcpTokenStore = McpTokenStore(this).also { it.token }
         val compressor = OpenAiCompatibleCompressor(llmSettings)
         val pageCache = FilePageExpansionCache(this)
         runtime = AndroidPageKitRuntime(
@@ -91,7 +101,7 @@ class PageKitApp : Application() {
             pageCache = pageCache,
         )
         pageKitApi = DefaultPageKitApi(runtime)
-        homeViewModel = HomeViewModel(this, runtime, pageKitApi, llmSettings)
+        homeViewModel = HomeViewModel(this, runtime, pageKitApi, llmSettings, proxySettings)
         val localSessions = BrowserSessionRegistry(
             profileId = DEFAULT_PROFILE_ID,
             processSlot = 0,
@@ -115,14 +125,14 @@ class PageKitApp : Application() {
             },
         )
         sessionGateway = MultiProfileSessionGateway(this, localSessions, ProfileSlotStore(this))
-        mcpTokenStore = McpTokenStore(this).also { it.token }
         mcpServer = PageKitMcpServerController(
-            tools = PageKitMcpTools(sessionGateway, llmSettings),
+            usageTools = PageKitUsageTools(sessionGateway),
+            managementTools = PageKitManagementTools(sessionGateway, llmSettings, proxySettings),
             kimiWebSearchAdapter = KimiWebSearchAdapter(
                 SessionWebSearchProvider(sessionGateway, DEFAULT_SESSION_ID),
             ),
             sessionGateway = sessionGateway,
-            accessPolicy = McpAccessPolicy(mcpTokenStore.token),
+            accessPolicy = McpAccessPolicy { mcpTokenStore.token },
         )
     }
 

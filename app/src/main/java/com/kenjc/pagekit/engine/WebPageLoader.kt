@@ -18,6 +18,8 @@ import android.webkit.WebViewClient
 import com.kenjc.pagekit.engine.adblock.AdBlocker
 import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
 
 /** 页面加载状态 */
@@ -42,7 +44,7 @@ class WebPageLoader(
 ) {
     companion object {
         private const val QUIET_AFTER_COMPLETE_MS = 800L
-        private const val LOAD_TIMEOUT_MS = 20_000L
+        private const val LOAD_TIMEOUT_MS = 60_000L
         private const val READINESS_DEBOUNCE_MS = 200L
         private const val DEFAULT_VIEWPORT_WIDTH = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT = 1920
@@ -210,6 +212,22 @@ class WebPageLoader(
         // 同步切换到 Loading，令 suspend API 可以无竞态地等待本次导航的终态。
         state.value = LoadState.Loading(url)
         webView.loadUrl(url)
+    }
+
+    /**
+     * 导航并等待终态（Ready/Failed）。与 [loadUrl] 的区别：返回是否成功及目标 URL，
+     * 供 navigate/back 类工具反馈真实结果（含重定向后的最终地址）。
+     */
+    suspend fun navigateAwait(rawUrl: String, timeoutMs: Long = LOAD_TIMEOUT_MS): Pair<Boolean, String> {
+        mainHandler.post { loadUrl(rawUrl) }
+        val terminal = withTimeoutOrNull(timeoutMs) {
+            state.first { it !is LoadState.Loading }
+        }
+        return when (terminal) {
+            is LoadState.Ready -> true to terminal.url
+            is LoadState.Failed -> false to terminal.url
+            else -> false to currentUrl() // 超时仍 Loading
+        }
     }
 
     private fun emptyResponse() = WebResourceResponse(

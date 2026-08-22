@@ -11,6 +11,11 @@ import com.kenjc.pagekit.compress.LlmConfigStatus
 import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.engine.LoadState
 import com.kenjc.pagekit.engine.SearchEngine
+import com.kenjc.pagekit.PageKitApp
+import com.kenjc.pagekit.net.ProxyConfig
+import com.kenjc.pagekit.ui.screensaver.ScreensaverSettings
+import com.kenjc.pagekit.net.ProxySettings
+import com.kenjc.pagekit.net.WebViewProxyApplier
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +45,7 @@ class HomeViewModel(
     private val runtime: AndroidPageKitRuntime,
     private val api: DefaultPageKitApi,
     private val llmSettings: LlmSettings,
+    private val proxySettings: ProxySettings,
 ) : AndroidViewModel(app) {
 
     private val jsonFmt = Json { prettyPrint = true; encodeDefaults = false }
@@ -67,6 +73,35 @@ class HomeViewModel(
     private val _llmStatus = MutableStateFlow(llmSettings.status())
     val llmStatus: StateFlow<LlmConfigStatus> = _llmStatus.asStateFlow()
     val llmConfigMessage = MutableStateFlow("")
+
+    private val _proxyConfig = MutableStateFlow(proxySettings.load())
+    val proxyConfig: StateFlow<ProxyConfig> = _proxyConfig.asStateFlow()
+
+    /** MCP 访问 token：启动时固定，仅手动重置时更换（见 [resetMcpToken]）。 */
+    private val _mcpToken = MutableStateFlow(getApplication<PageKitApp>().mcpTokenStore.token)
+    val mcpToken: StateFlow<String> = _mcpToken.asStateFlow()
+
+    fun resetMcpToken() {
+        _mcpToken.value = getApplication<PageKitApp>().mcpTokenStore.reset()
+    }
+
+    /** 屏保闲置时长（ms），0 表示关闭闲置自动进入；立即生效。 */
+    private val screensaverSettings = ScreensaverSettings(getApplication())
+    private val _screensaverTimeoutMs = MutableStateFlow(screensaverSettings.load())
+    val screensaverTimeoutMs: StateFlow<Long> = _screensaverTimeoutMs.asStateFlow()
+
+    fun saveScreensaverTimeout(value: Long) {
+        screensaverSettings.save(value)
+        _screensaverTimeoutMs.value = value
+    }
+
+    fun saveProxyConfig(enabled: Boolean, host: String, port: Int, bypass: String) {
+        val config = ProxyConfig(enabled = enabled, host = host, port = port, bypass = bypass)
+        proxySettings.save(config)
+        _proxyConfig.value = config
+        // 立即应用到当前进程的 WebView
+        WebViewProxyApplier.apply(config)
+    }
 
     fun setFocusIntent(v: String) {
         _focusIntent.value = v

@@ -127,6 +127,28 @@ class BrowserController {
         },
     ).orEvalFailed()
 
+    /** 下拉框选择：原生 value setter + input/change（与 type 同思路，兼容受控组件）。value 支持按值或可见文本匹配。 */
+    suspend fun select(webView: WebView, eid: String, value: String): String = eval(
+        webView,
+        opJs(eid) {
+            """
+            if (el.tagName !== 'SELECT') return err('not-select:$eid');
+            var want = ${jsString(value)};
+            var opts = Array.prototype.slice.call(el.options);
+            var hit = opts.find(function(o){ return o.value === want; }) ||
+                      opts.find(function(o){ return (o.textContent || '').trim() === want; });
+            if (!hit) {
+              return err('no-such-option:$eid value=' + want + ' options=' + opts.map(function(o){return o.value;}).join('|'));
+            }
+            var desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+            if (desc && desc.set) desc.set.call(el, hit.value); else el.value = hit.value;
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            return ok('selected:$eid=' + hit.value);
+            """.trimIndent()
+        },
+    ).orEvalFailed()
+
     /** 诊断：form 提交 hook —— snapshot 后调用，click 前调用；submit 被触发会改写 document.title */
     suspend fun armSubmitHook(webView: WebView): String = eval(
         webView,

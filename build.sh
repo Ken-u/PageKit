@@ -7,6 +7,7 @@
 #   ./build.sh release      # 使用本地固定 keystore 构建签名 release APK
 #   ./build.sh test         # JVM 单测
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
+#   ./build.sh run [serial] [url] # 一键启动：构建→安装→启动 App→端口转发→打印连接信息
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
@@ -137,6 +138,78 @@ install)
     DEV_ADDR=$(pick_device "${2:-}")
     "$ADB" $DEV_ADDR install -r app/build/outputs/apk/debug/app-debug.apk
     echo "✓ 已安装到 $DEV_ADDR"
+    ;;
+run)
+    # 一键启动：构建 → 安装 → 启动 App → 打印连接信息和 Kimi Code 配置
+    # 用法: ./build.sh run [serial] [url]
+    "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
+    DEV_ADDR=$(pick_device "${2:-}")
+    A="$ADB $DEV_ADDR"
+    PKG=com.kenjc.pagekit
+    START_URL="${3:-}"
+
+    echo "== 设备: $DEV_ADDR =="
+    "$ADB" $DEV_ADDR install -r app/build/outputs/apk/debug/app-debug.apk
+    "$ADB" $DEV_ADDR shell am force-stop "$PKG"
+
+    if [ -n "$START_URL" ]; then
+        "$ADB" $DEV_ADDR shell am start -W -n "$PKG/.MainActivity" -d "$START_URL" >/dev/null
+        echo "== 启动 URL: $START_URL =="
+    else
+        "$ADB" $DEV_ADDR shell am start -W -n "$PKG/.MainActivity" >/dev/null
+    fi
+
+    sleep 3
+
+    # 读取 MCP token
+    TOKEN=$("$ADB" $DEV_ADDR shell "run-as $PKG cat files/mcp_token.txt" 2>/dev/null | tr -d '\r\n')
+
+    # 获取设备局域网 IP（MCP 监听 0.0.0.0，可直接通过 IP 访问）
+    DEVICE_IP=$("$ADB" $DEV_ADDR shell "ip -4 addr" 2>/dev/null \
+        | grep -oP 'inet \K[0-9.]+' | grep -v '^127\.' | head -1 | tr -d '\r\n')
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║              PageKit 已启动 ✓                        ║"
+    echo "╠══════════════════════════════════════════════════════╣"
+    if [ -n "$TOKEN" ]; then
+        if [ -n "$DEVICE_IP" ]; then
+            echo "║  设备 IP:        $DEVICE_IP"
+            echo "║  MCP 使用端:     http://${DEVICE_IP}:3000/mcp"
+            echo "║  MCP 管理端:     http://${DEVICE_IP}:3001/mcp"
+            echo "║  WebSearch:      http://${DEVICE_IP}:3000/v1/search"
+            echo "║  WebFetch:       http://${DEVICE_IP}:3000/v1/fetch"
+            echo "║  Token:          $TOKEN"
+        else
+            echo "║  （无法获取设备 IP，MCP 端口 3000/3001 监听 0.0.0.0）"
+            echo "║  Token:          $TOKEN"
+        fi
+    else
+        echo "║  （MCP token 读取失败，请确认 App 已正常启动）"
+    fi
+    echo "╚══════════════════════════════════════════════════════╝"
+
+    # 打印 Kimi Code 配置方法
+    if [ -n "$TOKEN" ] && [ -n "$DEVICE_IP" ]; then
+        echo ""
+        echo "── Kimi Code 对接 ──────────────────────────────────────"
+        echo ""
+        echo "在 ~/.kimi-code/config.toml 中添加："
+        echo ""
+        echo '  [services.web_search]'
+        echo "  provider = \"custom\""
+        echo "  base_url = \"http://${DEVICE_IP}:3000/v1/search\""
+        echo "  api_key = \"${TOKEN}\""
+        echo ""
+        echo '  [services.web_fetch]'
+        echo "  base_url = \"http://${DEVICE_IP}:3000/v1/fetch\""
+        echo "  api_key_env = \"PAGEKIT_TOKEN\""
+        echo ""
+        echo "WebSearch 走 Moonshot 兼容协议（/v1/search 自动识别），"
+        echo "WebFetch 走 POST {\"url\":...} 返回正文 Markdown。"
+        echo "两者都走 PageKit 的 WebView 渲染管线（含代理 + 广告过滤）。"
+        echo "────────────────────────────────────────────────────────"
+    fi
     ;;
 verify)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon >/dev/null
@@ -592,6 +665,6 @@ clean)
     "$GRADLE_CMD" clean --no-daemon
     ;;
 *)
-    fail "未知命令: $CMD（build|release|test|install|verify|mcptest|providertest|sessiontest|llmtest|searchtest|opentest|clean）"
+    fail "未知命令: $CMD（build|release|test|install|run|verify|mcptest|providertest|sessiontest|llmtest|searchtest|opentest|clean）"
     ;;
 esac

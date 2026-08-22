@@ -114,6 +114,8 @@ dependencies {
     implementation(libs.ktor.server.cio)
     implementation(libs.mcp.kotlin.server)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.webkit)
+    implementation(libs.androidx.compose.material.icons)
     testImplementation(libs.junit)
     testImplementation(libs.mcp.kotlin.client)
     testImplementation(libs.mcp.kotlin.testing)

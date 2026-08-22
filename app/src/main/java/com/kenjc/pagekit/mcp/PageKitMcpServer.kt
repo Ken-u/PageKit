@@ -1,547 +1,275 @@
 package com.kenjc.pagekit.mcp
 
-import com.kenjc.pagekit.api.dto.FetchRequest
-import com.kenjc.pagekit.compress.LlmConfig
-import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.provider.KimiWebSearchAdapter
 import com.kenjc.pagekit.provider.SessionWebSearchProvider
-import com.kenjc.pagekit.provider.WebSearchRequest
 import com.kenjc.pagekit.session.DEFAULT_PROFILE_ID
 import com.kenjc.pagekit.session.DEFAULT_SESSION_ID
 import com.kenjc.pagekit.session.PageKitSessionGateway
 import android.util.Log
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.header
-import io.ktor.server.request.path
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
-import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
-import io.modelcontextprotocol.kotlin.sdk.types.Implementation
-import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
-import io.modelcontextprotocol.kotlin.sdk.types.TextContent
-import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
-import java.net.URI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 
-/** Session/Profile gateway 到 MCP tools 的协议适配层。 */
-class PageKitMcpTools(
-    private val gateway: PageKitSessionGateway,
-    private val llmSettings: LlmSettings,
-) {
-    private val json = Json { encodeDefaults = false }
-
-    fun createServer(): Server = Server(
-        serverInfo = Implementation(name = "pagekit", version = "0.4.0"),
-        options = ServerOptions(
-            capabilities = ServerCapabilities(
-                tools = ServerCapabilities.Tools(listChanged = false),
-            ),
-        ),
-        instructions = "Create isolated browser sessions and multi-process profiles, render pages in Android WebView, remove ads/noise, and extract structured content.",
-    ).apply {
-        addTool(
-            name = "profile_create",
-            description = "Create or open an isolated WebView profile in a dedicated Android process (maximum 3).",
-            inputSchema = schema(
-                "profile_id" to stringProperty("Stable profile ID: letters, digits, dot, underscore, dash"),
-                required = listOf("profile_id"),
-            ),
-        ) { request ->
-            toolResult {
-                buildJsonObject {
-                    put("profile", json.encodeToJsonElement(gateway.createProfile(request.arguments.requiredString("profile_id"))))
-                }
-            }
-        }
-
-        addTool(
-            name = "profile_list",
-            description = "List the default profile and all isolated process profiles.",
-            inputSchema = schema(),
-        ) {
-            toolResult { buildJsonObject { put("profiles", json.encodeToJsonElement(gateway.listProfiles())) } }
-        }
-
-        addTool(
-            name = "profile_delete",
-            description = "Close all sessions and permanently clear cookies, storage, cache, and extracted-page cache for an isolated profile.",
-            inputSchema = schema(
-                "profile_id" to stringProperty("Isolated profile ID to delete"),
-                required = listOf("profile_id"),
-            ),
-        ) { request ->
-            toolResult {
-                val deleted = gateway.deleteProfile(request.arguments.requiredString("profile_id"))
-                require(deleted) { "profile not found" }
-                buildJsonObject { put("deleted", true) }
-            }
-        }
-
-        addTool(
-            name = "session_create",
-            description = "Create an independent WebView session inside a profile.",
-            inputSchema = schema(
-                "profile_id" to stringProperty("Profile ID; defaults to the shared main-process profile"),
-            ),
-        ) { request ->
-            toolResult {
-                buildJsonObject {
-                    put(
-                        "session",
-                        json.encodeToJsonElement(
-                            gateway.createSession(request.arguments.string("profile_id") ?: DEFAULT_PROFILE_ID),
-                        ),
-                    )
-                }
-            }
-        }
-
-        addTool(
-            name = "session_list",
-            description = "List browser sessions, optionally filtered by profile.",
-            inputSchema = schema("profile_id" to stringProperty("Optional profile ID")),
-        ) { request ->
-            toolResult {
-                buildJsonObject {
-                    put("sessions", json.encodeToJsonElement(gateway.listSessions(request.arguments.string("profile_id"))))
-                }
-            }
-        }
-
-        addTool(
-            name = "session_close",
-            description = "Destroy a non-default WebView session and release its renderer resources.",
-            inputSchema = schema(
-                "session_id" to stringProperty("Session ID returned by session_create"),
-                required = listOf("session_id"),
-            ),
-        ) { request ->
-            toolResult {
-                val closed = gateway.closeSession(request.arguments.requiredString("session_id"))
-                require(closed) { "session not found" }
-                buildJsonObject { put("closed", true) }
-            }
-        }
-
-        addTool(
-            name = "webfetch",
-            description = "Render and extract an HTTP(S) page in raw, compact, or intent-focused mode.",
-            inputSchema = schema(
-                "url" to stringProperty("HTTP(S) URL"),
-                "intent" to stringProperty("Optional extraction intent"),
-                "mode" to stringProperty("Extraction mode", enum = listOf("raw", "compact", "focus")),
-                "session_id" to sessionProperty(),
-                required = listOf("url"),
-            ),
-        ) { request ->
-            toolResult {
-                val url = request.arguments.requiredString("url")
-                validateRemoteUrl(url)
-                val mode = request.arguments.string("mode") ?: "raw"
-                validateMode(mode, request.arguments.string("intent"))
-                val result = gateway.fetch(
-                    sessionId = request.arguments.sessionId(),
-                    request = FetchRequest(
-                        url = url,
-                        intent = request.arguments.string("intent"),
-                        mode = mode,
-                    ),
-                )
-                buildJsonObject {
-                    put("page", json.encodeToJsonElement(result.page))
-                    put("markdown", result.markdown)
-                    put("byline", result.byline)
-                    put("extraction_mode", result.extractionMode)
-                    put("compression_mode", mode)
-                    put("duration_ms", result.durationMs)
-                }
-            }
-        }
-
-        addTool(
-            name = "websearch",
-            description = "Search the web and return structured results; optionally render each result and include its Markdown content.",
-            inputSchema = schema(
-                "query" to stringProperty("Search query"),
-                "engine" to stringProperty("Search engine", enum = listOf("bing", "baidu", "sogou", "360", "google")),
-                "limit" to integerProperty("Number of results (1-20)", default = 5),
-                "include_content" to booleanProperty("Render result pages and include Markdown content", default = false),
-                "session_id" to sessionProperty(),
-                required = listOf("query"),
-            ),
-        ) { request ->
-            toolResult {
-                val startedAt = System.currentTimeMillis()
-                val result = SessionWebSearchProvider(gateway, request.arguments.sessionId()).search(
-                    WebSearchRequest(
-                        query = request.arguments.requiredString("query"),
-                        engine = request.arguments.string("engine") ?: "bing",
-                        limit = request.arguments.int("limit") ?: 5,
-                        includeContent = request.arguments.boolean("include_content") ?: false,
-                    ),
-                )
-                buildJsonObject {
-                    put("query", result.query)
-                    put("results", json.encodeToJsonElement(result.results))
-                    put("duration_ms", System.currentTimeMillis() - startedAt)
-                }
-            }
-        }
-
-        addTool(
-            name = "expand",
-            description = "Return one original Markdown section from the page cache without fetching the page again.",
-            inputSchema = schema(
-                "section" to stringProperty("Section ID (such as s2) or heading"),
-                "page_id" to stringProperty("Optional page_id; defaults to the latest fetched page"),
-                "session_id" to sessionProperty(),
-                required = listOf("section"),
-            ),
-        ) { request ->
-            toolResult {
-                json.encodeToJsonElement(
-                    gateway.expand(
-                        sessionId = request.arguments.sessionId(),
-                        section = request.arguments.requiredString("section"),
-                        pageId = request.arguments.string("page_id"),
-                    ),
-                ).jsonObject
-            }
-        }
-
-        addTool(
-            name = "browser_snapshot",
-            description = "List visible interactive elements on the current page with stable [eN] IDs.",
-            inputSchema = schema("session_id" to sessionProperty()),
-        ) { request ->
-            toolResult {
-                buildJsonObject {
-                    put("elements", buildJsonArray {
-                        gateway.snapshot(request.arguments.sessionId()).forEach { add(JsonPrimitive(it)) }
-                    })
-                }
-            }
-        }
-
-        addTool(
-            name = "browser_click",
-            description = "Click an interactive element returned by browser_snapshot.",
-            inputSchema = schema(
-                "element_id" to stringProperty("Element ID such as e3"),
-                "session_id" to sessionProperty(),
-                required = listOf("element_id"),
-            ),
-        ) { request ->
-            booleanResult {
-                gateway.click(request.arguments.sessionId(), request.arguments.requiredString("element_id"))
-            }
-        }
-
-        addTool(
-            name = "browser_type",
-            description = "Replace the value of an input or textarea.",
-            inputSchema = schema(
-                "element_id" to stringProperty("Element ID such as e3"),
-                "text" to stringProperty("Text to enter"),
-                "session_id" to sessionProperty(),
-                required = listOf("element_id", "text"),
-            ),
-        ) { request ->
-            booleanResult {
-                gateway.type(
-                    request.arguments.sessionId(),
-                    request.arguments.requiredString("element_id"),
-                    request.arguments.requiredString("text"),
-                )
-            }
-        }
-
-        addTool(
-            name = "browser_scroll",
-            description = "Scroll the current page by CSS pixels.",
-            inputSchema = schema(
-                "dx" to integerProperty("Horizontal delta", default = 0),
-                "dy" to integerProperty("Vertical delta", default = 600),
-                "session_id" to sessionProperty(),
-            ),
-        ) { request ->
-            booleanResult {
-                gateway.scroll(
-                    sessionId = request.arguments.sessionId(),
-                    dx = request.arguments.int("dx") ?: 0,
-                    dy = request.arguments.int("dy") ?: 600,
-                )
-            }
-        }
-
-        addTool(
-            name = "llm_status",
-            description = "Show OpenAI-compatible compressor configuration without exposing the API key.",
-            inputSchema = schema(),
-        ) {
-            toolResult {
-                val status = llmSettings.status()
-                buildJsonObject {
-                    put("endpoint", status.endpoint)
-                    put("model", status.model)
-                    put("configured", status.configured)
-                    put("has_api_key", status.hasApiKey)
-                }
-            }
-        }
-
-        addTool(
-            name = "llm_configure",
-            description = "Configure the OpenAI-compatible compressor. API keys are stored in app-private preferences and never returned.",
-            inputSchema = schema(
-                "endpoint" to stringProperty("HTTPS API base URL or loopback HTTP URL"),
-                "model" to stringProperty("Chat completion model name"),
-                "api_key" to stringProperty("Optional bearer token; omit to keep the current key"),
-                "clear_api_key" to booleanProperty("Clear the stored API key", default = false),
-                required = listOf("endpoint", "model"),
-            ),
-        ) { request ->
-            toolResult {
-                val previous = llmSettings.load()
-                val key = when {
-                    request.arguments.boolean("clear_api_key") == true -> ""
-                    request.arguments?.containsKey("api_key") == true -> request.arguments.rawString("api_key")
-                    else -> previous.apiKey
-                }
-                llmSettings.save(
-                    LlmConfig(
-                        endpoint = request.arguments.requiredString("endpoint"),
-                        model = request.arguments.requiredString("model"),
-                        apiKey = key,
-                        maxInputChars = previous.maxInputChars,
-                        maxOutputTokens = previous.maxOutputTokens,
-                    ),
-                )
-                val status = llmSettings.status()
-                buildJsonObject {
-                    put("configured", status.configured)
-                    put("endpoint", status.endpoint)
-                    put("model", status.model)
-                    put("has_api_key", status.hasApiKey)
-                }
-            }
-        }
-    }
-
-    private suspend fun toolResult(block: suspend () -> JsonObject): CallToolResult = try {
-        val structured = block()
-        CallToolResult(
-            content = listOf(TextContent(text = json.encodeToString(structured))),
-            isError = false,
-            structuredContent = structured,
-        )
-    } catch (error: Throwable) {
-        CallToolResult(
-            content = listOf(TextContent(text = error.message ?: error::class.java.simpleName)),
-            isError = true,
-        )
-    }
-
-    private suspend fun booleanResult(block: suspend () -> Boolean): CallToolResult = toolResult {
-        val ok = block()
-        require(ok) { "browser operation failed; take a new browser_snapshot and retry" }
-        buildJsonObject { put("ok", true) }
-    }
-
-    private fun validateRemoteUrl(value: String) {
-        val uri = runCatching { URI(value) }.getOrElse { throw IllegalArgumentException("invalid URL") }
-        require(uri.scheme == "http" || uri.scheme == "https") { "only http/https URLs are allowed" }
-        require(!uri.host.isNullOrBlank()) { "URL host is required" }
-    }
-
-    private fun validateMode(mode: String, intent: String?) {
-        require(mode in setOf("raw", "compact", "focus")) { "unsupported mode: $mode" }
-        if (mode == "focus") require(!intent.isNullOrBlank()) { "focus mode requires intent" }
-    }
-
-    private fun schema(
-        vararg properties: Pair<String, JsonObject>,
-        required: List<String> = emptyList(),
-    ) = ToolSchema(
-        properties = buildJsonObject { properties.forEach { (name, value) -> put(name, value) } },
-        required = required,
-    )
-
-    private fun stringProperty(description: String, enum: List<String> = emptyList()) = buildJsonObject {
-        put("type", "string")
-        put("description", description)
-        if (enum.isNotEmpty()) put("enum", JsonArray(enum.map(::JsonPrimitive)))
-    }
-
-    private fun integerProperty(description: String, default: Int) = buildJsonObject {
-        put("type", "integer")
-        put("description", description)
-        put("default", default)
-    }
-
-    private fun booleanProperty(description: String, default: Boolean) = buildJsonObject {
-        put("type", "boolean")
-        put("description", description)
-        put("default", default)
-    }
-
-    private fun sessionProperty() = stringProperty("Browser session ID; defaults to the visible UI session")
-
-    private fun JsonObject?.string(name: String): String? {
-        val value = this?.get(name)?.jsonPrimitive?.content?.trim()?.takeIf(String::isNotEmpty)
-        return value
-    }
-
-    private fun JsonObject?.requiredString(name: String): String =
-        requireNotNull(string(name)) { "missing required argument: $name" }
-
-    private fun JsonObject?.rawString(name: String): String =
-        runCatching { this?.get(name)?.jsonPrimitive?.content }.getOrNull().orEmpty()
-
-    private fun JsonObject?.int(name: String): Int? = this?.get(name)?.jsonPrimitive?.intOrNull
-    private fun JsonObject?.boolean(name: String): Boolean? = this?.get(name)?.jsonPrimitive?.booleanOrNull
-    private fun JsonObject?.sessionId(): String = string("session_id") ?: DEFAULT_SESSION_ID
-}
-
-/** 仅绑定设备回环地址的 Streamable HTTP server，由前台 Service 持有生命周期。 */
+/**
+ * Streamable HTTP server，由前台 Service 持有生命周期。
+ *
+ * 绑定地址默认 `0.0.0.0`（所有接口：回环、局域网、热点客户端均可访问）。绑定地址本身
+ * 不提供安全隔离，访问控制完全依赖 Bearer token + Origin 策略（见 [McpAccessPolicy]）。
+ * 如需收窄监听面，可在启动 Intent 传 `--es mcp_bind lan`（仅局域网 IPv4）或
+ * `loopback`（仅本机回环），解析规则见 [McpBindMode]。
+ *
+ * 使用两个独立的 Ktor engine（避免 SSE 插件重复安装）：
+ * - port 3000 `/mcp`      — 使用端：webfetch / websearch / expand / browser_*（面向实际使用的 Agent）
+ * - port 3000 `/v1/search` — Kimi 原生 SearchWeb 兼容端点
+ * - port 3001 `/mcp`      — 管理端：profile_* / session_* / llm_* / proxy_*（面向管理 Agent）
+ *
+ * 主机侧端口转发：
+ *   adb forward tcp:19300 tcp:3000   # 使用端 + WebSearch（仅绑定地址含回环时可用）
+ *   adb forward tcp:19301 tcp:3001   # 管理端
+ */
 class PageKitMcpServerController(
-    private val tools: PageKitMcpTools,
+    private val usageTools: PageKitUsageTools,
+    private val managementTools: PageKitManagementTools,
     private val kimiWebSearchAdapter: KimiWebSearchAdapter,
     private val sessionGateway: PageKitSessionGateway,
     private val accessPolicy: McpAccessPolicy,
-    private val host: String = "127.0.0.1",
-    private val port: Int = 3000,
+    private val host: String = "0.0.0.0",
+    private val usagePort: Int = 3000,
+    private val managementPort: Int = 3001,
 ) {
     private val lifecycleLock = Any()
-    private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    private val engines = mutableListOf<EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>>()
     private var startingJob: Job? = null
+    private var currentHost: String = host
 
-    fun start(scope: CoroutineScope) {
+    /**
+     * 启动服务。[bindHost] 为 null 时沿用构造参数 [host]。若服务已在运行且 [bindHost] 与
+     * 当前绑定地址不同，先停止旧 engine 再以新地址启动——LAN 模式下 Wi-Fi 重连导致
+     * 局域网 IP 变化时也走这条路径自动重绑。
+     */
+    fun start(scope: CoroutineScope, bindHost: String? = null) {
+        val targetHost = bindHost ?: host
+        val restartNeeded = synchronized(lifecycleLock) {
+            (engines.isNotEmpty() || startingJob?.isActive == true) && currentHost != targetHost
+        }
+        if (restartNeeded) {
+            Log.i(TAG, "MCP bind host changed: $currentHost -> $targetHost, restarting")
+            stop()
+        }
         synchronized(lifecycleLock) {
-            if (engine != null || startingJob?.isActive == true) return
+            if (engines.isNotEmpty() || startingJob?.isActive == true) return
             startingJob = scope.launch {
                 val ownJob = coroutineContext[Job]
-                var newEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+                val started = mutableListOf<EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>>()
                 try {
-                    val mcpServer = tools.createServer()
-                    newEngine = embeddedServer(CIO, host = host, port = port) {
-                        intercept(ApplicationCallPipeline.Plugins) {
-                            if (context.request.path() !in PROTECTED_PATHS) return@intercept
-                            when (
-                                accessPolicy.evaluate(
-                                    authorization = context.request.header("Authorization"),
-                                    origin = context.request.header("Origin"),
-                                )
-                            ) {
-                                McpAccessDecision.ALLOW -> Unit
-                                McpAccessDecision.UNAUTHORIZED -> {
-                                    context.response.headers.append("WWW-Authenticate", "Bearer")
-                                    context.respondText("Unauthorized", status = HttpStatusCode.Unauthorized)
-                                    finish()
-                                }
-                                McpAccessDecision.FORBIDDEN_ORIGIN -> {
-                                    context.respondText("Forbidden Origin", status = HttpStatusCode.Forbidden)
-                                    finish()
-                                }
-                            }
-                        }
-                        mcpStreamableHttp(path = "/mcp") { mcpServer }
+                    // ── 使用端 engine (port 3000)：/mcp + /v1/search ──
+                    val usageServer: Server = usageTools.createServer()
+                    val usageEngine = embeddedServer(CIO, host = targetHost, port = usagePort) {
+                        interceptAuth()
+                        mcpStreamableHttp(
+                            path = "/mcp",
+                            enableDnsRebindingProtection = false,
+                        ) { usageServer }
                         routing {
                             post("/v1/search") {
-                                val requestedSession = call.request.header(SESSION_HEADER)?.trim()?.takeIf(String::isNotEmpty)
-                                var ephemeralSession: String? = null
-                                try {
-                                    val sessionId = requestedSession ?: sessionGateway.createSession(
-                                        call.request.header(PROFILE_HEADER)?.trim()?.takeIf(String::isNotEmpty)
-                                            ?: DEFAULT_PROFILE_ID,
-                                    ).sessionId.also { ephemeralSession = it }
-                                    call.respondText(
-                                        text = kimiWebSearchAdapter.handle(
-                                            requestBody = call.receiveText(),
-                                            scopedProvider = SessionWebSearchProvider(sessionGateway, sessionId),
-                                        ),
-                                        contentType = ContentType.Application.Json,
-                                    )
-                                } catch (error: IllegalArgumentException) {
-                                    call.respondText(
-                                        text = error.message ?: "Invalid request",
-                                        status = HttpStatusCode.BadRequest,
-                                    )
-                                } catch (error: Throwable) {
-                                    Log.e(TAG, "WebSearch provider failed", error)
-                                    call.respondText(
-                                        text = error.message ?: "Search failed",
-                                        status = HttpStatusCode.InternalServerError,
-                                    )
-                                } finally {
-                                    ephemeralSession?.let { runCatching { sessionGateway.closeSession(it) } }
-                                }
+                                handleWebSearch(
+                                    call = call,
+                                    requestedSession = call.request.header(SESSION_HEADER)?.trim()?.takeIf(String::isNotEmpty),
+                                    requestedProfile = call.request.header(PROFILE_HEADER)?.trim()?.takeIf(String::isNotEmpty),
+                                )
+                            }
+                            post("/v1/fetch") {
+                                handleWebFetch(
+                                    call = call,
+                                    requestedSession = call.request.header(SESSION_HEADER)?.trim()?.takeIf(String::isNotEmpty),
+                                    requestedProfile = call.request.header(PROFILE_HEADER)?.trim()?.takeIf(String::isNotEmpty),
+                                )
                             }
                         }
                     }
-                    newEngine.start(wait = false)
+                    usageEngine.start(wait = false)
+                    started.add(usageEngine)
+
+                    // ── 管理端 engine (port 3001)：/mcp ──
+                    val managementServer: Server = managementTools.createServer()
+                    val managementEngine = embeddedServer(CIO, host = targetHost, port = managementPort) {
+                        interceptAuth()
+                        mcpStreamableHttp(
+                            path = "/mcp",
+                            enableDnsRebindingProtection = false,
+                        ) { managementServer }
+                    }
+                    managementEngine.start(wait = false)
+                    started.add(managementEngine)
+
                     val keepRunning = synchronized(lifecycleLock) {
                         if (ownJob?.isActive == true && startingJob === ownJob) {
-                            engine = newEngine
+                            engines.addAll(started)
                             startingJob = null
+                            currentHost = targetHost
                             true
                         } else {
                             false
                         }
                     }
-                    if (!keepRunning) newEngine.stop(500, 2_000)
-                    else Log.i(TAG, "MCP + WebSearch listening on http://$host:$port")
+                    if (!keepRunning) {
+                        started.forEach { it.stop(500, 2_000) }
+                    } else {
+                        Log.i(TAG, "MCP usage + WebSearch on http://$targetHost:$usagePort, admin on http://$targetHost:$managementPort")
+                    }
                 } catch (error: Throwable) {
                     synchronized(lifecycleLock) {
                         if (startingJob === ownJob) startingJob = null
                     }
-                    newEngine?.stop(0, 500)
+                    started.forEach { it.stop(0, 500) }
                     if (ownJob?.isActive == true) Log.e(TAG, "MCP server failed", error)
                 }
             }
         }
     }
 
+    private fun io.ktor.server.application.Application.interceptAuth() {
+        intercept(ApplicationCallPipeline.Plugins) {
+            when (
+                accessPolicy.evaluate(
+                    authorization = context.request.header("Authorization"),
+                    origin = context.request.header("Origin"),
+                )
+            ) {
+                McpAccessDecision.ALLOW -> Unit
+                McpAccessDecision.UNAUTHORIZED -> {
+                    context.response.headers.append("WWW-Authenticate", "Bearer")
+                    context.respondText("Unauthorized", status = HttpStatusCode.Unauthorized)
+                    finish()
+                }
+                McpAccessDecision.FORBIDDEN_ORIGIN -> {
+                    context.respondText("Forbidden Origin", status = HttpStatusCode.Forbidden)
+                    finish()
+                }
+            }
+        }
+    }
+
+    private suspend fun handleWebSearch(
+        call: io.ktor.server.application.ApplicationCall,
+        requestedSession: String?,
+        requestedProfile: String?,
+    ) {
+        // 默认使用 UI 绑定的 default session，让用户在屏幕上看到渲染过程；
+        // 传了 X-PageKit-Session 则用指定 session，传了 X-PageKit-Profile 但没 session 则建临时 session。
+        var ephemeralSession: String? = null
+        try {
+            val sessionId = when {
+                requestedSession != null -> requestedSession
+                requestedProfile != null -> sessionGateway.createSession(requestedProfile).sessionId.also { ephemeralSession = it }
+                else -> DEFAULT_SESSION_ID
+            }
+            call.respondText(
+                text = kimiWebSearchAdapter.handle(
+                    requestBody = call.receiveText(),
+                    scopedProvider = SessionWebSearchProvider(sessionGateway, sessionId),
+                ),
+                contentType = ContentType.Application.Json,
+            )
+        } catch (error: IllegalArgumentException) {
+            call.respondText(
+                text = error.message ?: "Invalid request",
+                status = HttpStatusCode.BadRequest,
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "WebSearch provider failed", error)
+            call.respondText(
+                text = error.message ?: "Search failed",
+                status = HttpStatusCode.InternalServerError,
+            )
+        } finally {
+            ephemeralSession?.let { runCatching { sessionGateway.closeSession(it) } }
+        }
+    }
+
+    /**
+     * kkagent / Kimi Code Web Fetch 协议：
+     * POST {base_url}，body {"url": "<目标 URL>"}，Bearer 鉴权。
+     * 响应：2xx + 抽取后的正文纯文本（Markdown）。
+     */
+    private suspend fun handleWebFetch(
+        call: io.ktor.server.application.ApplicationCall,
+        requestedSession: String?,
+        requestedProfile: String?,
+    ) {
+        // 默认使用 UI 绑定的 default session，让用户在屏幕上看到渲染过程
+        var ephemeralSession: String? = null
+        try {
+            val body = json.decodeFromString<FetchRequestBody>(call.receiveText())
+            val url = body.url?.trim()?.takeIf(String::isNotEmpty)
+                ?: throw IllegalArgumentException("missing required field: url")
+            val uri = runCatching { java.net.URI(url) }.getOrElse { throw IllegalArgumentException("invalid URL") }
+            require(uri.scheme == "http" || uri.scheme == "https") { "only http/https URLs are allowed" }
+            require(!uri.host.isNullOrBlank()) { "URL host is required" }
+
+            val sessionId = when {
+                requestedSession != null -> requestedSession
+                requestedProfile != null -> sessionGateway.createSession(requestedProfile).sessionId.also { ephemeralSession = it }
+                else -> DEFAULT_SESSION_ID
+            }
+
+            val result = sessionGateway.fetch(
+                sessionId = sessionId,
+                request = com.kenjc.pagekit.api.dto.FetchRequest(url = url, mode = "raw"),
+            )
+            call.respondText(
+                text = result.markdown,
+                contentType = ContentType.Text.Plain,
+            )
+        } catch (error: IllegalArgumentException) {
+            call.respondText(
+                text = error.message ?: "Invalid request",
+                status = HttpStatusCode.BadRequest,
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "WebFetch failed", error)
+            call.respondText(
+                text = error.message ?: "Fetch failed",
+                status = HttpStatusCode.InternalServerError,
+            )
+        } finally {
+            ephemeralSession?.let { runCatching { sessionGateway.closeSession(it) } }
+        }
+    }
+
+    @kotlinx.serialization.Serializable
+    private data class FetchRequestBody(val url: String? = null)
+
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
     fun stop() {
-        val running = synchronized(lifecycleLock) {
+        synchronized(lifecycleLock) {
             startingJob?.cancel()
             startingJob = null
-            engine.also { engine = null }
-        }
-        running?.stop(gracePeriodMillis = 500, timeoutMillis = 2_000)
+            val running = engines.toList()
+            engines.clear()
+            running
+        }.forEach { it.stop(gracePeriodMillis = 500, timeoutMillis = 2_000) }
     }
 
     private companion object {
         const val TAG = "PageKit.MCP"
-        val PROTECTED_PATHS = setOf("/mcp", "/v1/search")
         const val SESSION_HEADER = "X-PageKit-Session"
         const val PROFILE_HEADER = "X-PageKit-Profile"
     }

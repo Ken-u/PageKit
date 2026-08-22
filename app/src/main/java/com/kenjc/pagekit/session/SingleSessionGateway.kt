@@ -5,6 +5,9 @@ import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.RuntimePageResult
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** 纯 JVM 测试与兼容嵌入场景使用的单 Session gateway。 */
 class SingleSessionGateway(
@@ -62,6 +65,13 @@ class SingleSessionGateway(
         requireDefault(sessionId); return api.type(elementId, text)
     }
 
+    override suspend fun select(sessionId: String, elementId: String, value: String): Boolean {
+        requireDefault(sessionId)
+        return runCatching {
+            Json.parseToJsonElement(api.selectResult(elementId, value)).jsonObject["ok"]?.jsonPrimitive?.content == "true"
+        }.getOrDefault(false)
+    }
+
     override suspend fun scroll(sessionId: String, dx: Int, dy: Int): Boolean {
         requireDefault(sessionId); return api.scroll(dx, dy)
     }
@@ -80,5 +90,22 @@ class SingleSessionGateway(
 
     override suspend fun armSubmitHook(sessionId: String): String {
         requireDefault(sessionId); return api.armSubmitHook()
+    }
+
+    override suspend fun currentUrl(sessionId: String): String {
+        requireDefault(sessionId); return api.currentUrl()
+    }
+
+    override suspend fun navigate(sessionId: String, url: String): Pair<Boolean, String> {
+        requireDefault(sessionId); return api.navigate(url)
+    }
+
+    override suspend fun goBack(sessionId: String): Pair<Boolean, String> {
+        requireDefault(sessionId); return api.goBack()
+    }
+
+    override suspend fun closeIdleSessions(profileId: String?, idleMs: Long): Int {
+        // 单 Session gateway 只有 default UI session，永不回收。
+        return 0
     }
 }

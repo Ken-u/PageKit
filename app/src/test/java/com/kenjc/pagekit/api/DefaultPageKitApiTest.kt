@@ -82,12 +82,15 @@ class DefaultPageKitApiTest {
         override suspend fun listInteractiveElements(): List<String> = guarded { emptyList() }
         override suspend fun click(elementId: String): String = guarded { ok() }
         override suspend fun type(elementId: String, text: String): String = guarded { ok() }
+        override suspend fun select(elementId: String, value: String): String = guarded { ok() }
         override suspend fun scroll(dx: Int, dy: Int): String = guarded { ok() }
         override suspend fun annotate(on: Boolean): String = guarded { ok() }
         override suspend fun title(): String = guarded { ok() }
         override suspend fun inspect(elementId: String): String = guarded { ok() }
         override suspend fun armSubmitHook(): String = guarded { ok() }
         override suspend fun currentUrl(): String = guarded { lastRequest?.url.orEmpty() }
+        override suspend fun navigate(url: String): Pair<Boolean, String> = guarded { true to url }
+        override suspend fun goBack(): Pair<Boolean, String> = guarded { false to (lastRequest?.url.orEmpty()) }
 
         private suspend fun <T> guarded(block: () -> T): T {
             calls.incrementAndGet()

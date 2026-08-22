@@ -1,12 +1,13 @@
 # Coding Agent WebSearch 接入
 
-PageKit 在同一个设备回环服务上提供两种 adapter：
+PageKit 在同一个本地服务上提供两种 adapter（绑定地址由启动参数 `--es mcp_bind` 决定，
+默认 `0.0.0.0`；下文以回环 `127.0.0.1` 为例）：
 
 - 通用 MCP：`POST http://127.0.0.1:3000/mcp`
 - Kimi Code 原生 `SearchWeb`：`POST http://127.0.0.1:3000/v1/search`
 
 两者共用 PageKit 的搜索引擎和广告过滤管线，但可路由到不同 WebView Session/Profile。
-服务只绑定设备 localhost；主机侧先执行：
+服务默认监听所有接口，访问安全由 Bearer token 保证；主机侧先执行：
 
 ```bash
 adb forward tcp:19300 tcp:3000

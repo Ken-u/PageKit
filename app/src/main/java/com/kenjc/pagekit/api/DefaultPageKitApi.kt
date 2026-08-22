@@ -86,11 +86,14 @@ class DefaultPageKitApi(
     suspend fun clickResult(elementId: String): String = sessionMutex.withLock { runtime.click(elementId) }
     suspend fun typeResult(elementId: String, text: String): String = sessionMutex.withLock { runtime.type(elementId, text) }
     suspend fun scrollResult(dx: Int, dy: Int): String = sessionMutex.withLock { runtime.scroll(dx, dy) }
+    suspend fun selectResult(elementId: String, value: String): String = sessionMutex.withLock { runtime.select(elementId, value) }
     suspend fun annotate(on: Boolean): String = sessionMutex.withLock { runtime.annotate(on) }
     suspend fun title(): String = sessionMutex.withLock { runtime.title() }
     suspend fun inspect(elementId: String): String = sessionMutex.withLock { runtime.inspect(elementId) }
     suspend fun armSubmitHook(): String = sessionMutex.withLock { runtime.armSubmitHook() }
     suspend fun currentUrl(): String = sessionMutex.withLock { runtime.currentUrl() }
+    suspend fun navigate(url: String): Pair<Boolean, String> = sessionMutex.withLock { runtime.navigate(url) }
+    suspend fun goBack(): Pair<Boolean, String> = sessionMutex.withLock { runtime.goBack() }
 
     private fun operationOk(result: String): Boolean = runCatching {
         Json.parseToJsonElement(result).jsonObject["ok"]?.jsonPrimitive?.content == "true"

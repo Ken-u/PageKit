@@ -17,6 +17,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -148,6 +149,59 @@ class MultiProfileSessionGateway(
 
     override suspend fun armSubmitHook(sessionId: String): String =
         stringOperation(sessionId, ProfileWorkerOperations.ARM_SUBMIT) { it.armSubmitHook() }
+
+    override suspend fun select(sessionId: String, elementId: String, value: String): Boolean =
+        booleanOperation(sessionId, ProfileWorkerOperations.SELECT, buildJsonObject {
+            put("element_id", elementId); put("value", value)
+        }) { it.selectResult(elementId, value).let { r -> selectOk(r) } }
+
+    private fun selectOk(result: String): Boolean = runCatching {
+        json.parseToJsonElement(result).jsonObject["ok"]?.jsonPrimitive?.content == "true"
+    }.getOrDefault(false)
+
+    override suspend fun currentUrl(sessionId: String): String =
+        stringOperation(sessionId, ProfileWorkerOperations.CURRENT_URL) { it.currentUrl() }
+
+    override suspend fun navigate(sessionId: String, url: String): Pair<Boolean, String> =
+        routed(sessionId, ProfileWorkerOperations.NAVIGATE, buildJsonObject { put("url", url) },
+            local = { it.navigate(url) }) { result ->
+            result.getValue("ok").jsonPrimitive.content.toBooleanStrict() to result.getValue("url").jsonPrimitive.content
+        }
+
+    override suspend fun goBack(sessionId: String): Pair<Boolean, String> =
+        routed(sessionId, ProfileWorkerOperations.GO_BACK, JsonObject(emptyMap()),
+            local = { it.goBack() }) { result ->
+            result.getValue("ok").jsonPrimitive.content.toBooleanStrict() to result.getValue("url").jsonPrimitive.content
+        }
+
+    override suspend fun closeIdleSessions(profileId: String?, idleMs: Long): Int {
+        require(idleMs >= 0) { "idle_ms must be >= 0" }
+        val targets: List<Pair<Int, String>> = when (profileId) {
+            null -> {
+                // 所有 profile：本地 default + 已分配的 worker 槽
+                buildList {
+                    add(0 to DEFAULT_PROFILE_ID)
+                    slotStore.mappings().forEach { (slot, profile) -> add(slot to profile) }
+                }
+            }
+
+            DEFAULT_PROFILE_ID -> listOf(0 to DEFAULT_PROFILE_ID)
+
+            else -> {
+                val slot = requireNotNull(slotStore.slotFor(profileId)) { "unknown profile_id: $profileId" }
+                listOf(slot to profileId)
+            }
+        }
+        return targets.sumOf { (slot, profile) ->
+            if (slot == 0) {
+                localSessions.closeIdle(idleMs).size
+            } else {
+                remote(slot, ProfileWorkerOperations.SESSION_CLOSE_IDLE, profile, arguments = buildJsonObject {
+                    put("idle_ms", idleMs)
+                }).getValue("closed").jsonArray.size
+            }
+        }
+    }
 
     suspend fun close() {
         clients.values.forEach { it.close() }

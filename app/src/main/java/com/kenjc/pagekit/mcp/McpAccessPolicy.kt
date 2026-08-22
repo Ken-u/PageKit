@@ -9,12 +9,13 @@ enum class McpAccessDecision {
     FORBIDDEN_ORIGIN,
 }
 
-/** localhost MCP 的最小访问策略：随机 Bearer token + 浏览器 Origin 限制。 */
+/** localhost MCP 的最小访问策略：随机 Bearer token + 浏览器 Origin 限制。
+ *
+ * 注意：这只约束“谁能调用本服务”。服务默认绑定 `0.0.0.0`（可用启动参数 `--es mcp_bind`
+ * 收窄为 `lan` / `loopback`），任何能到达该地址的客户端都会先经过本策略校验。 */
 class McpAccessPolicy(
-    expectedToken: String,
+    private val tokenProvider: () -> String,
 ) {
-    private val expectedTokenBytes = expectedToken.toByteArray(Charsets.UTF_8)
-
     fun evaluate(authorization: String?, origin: String?): McpAccessDecision {
         if (origin != null && !isLoopbackOrigin(origin)) return McpAccessDecision.FORBIDDEN_ORIGIN
         val actual = authorization
@@ -23,7 +24,8 @@ class McpAccessPolicy(
             ?.trim()
             ?.toByteArray(Charsets.UTF_8)
             ?: return McpAccessDecision.UNAUTHORIZED
-        return if (MessageDigest.isEqual(expectedTokenBytes, actual)) {
+        val expected = tokenProvider().toByteArray(Charsets.UTF_8)
+        return if (MessageDigest.isEqual(expected, actual)) {
             McpAccessDecision.ALLOW
         } else {
             McpAccessDecision.UNAUTHORIZED
