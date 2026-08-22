@@ -95,6 +95,12 @@ class McpTokenReceiver : BroadcastReceiver() {
         }
 
         Log.i(TAG, "config applied: ${applied.joinToString(", ").ifEmpty { "nothing" } }")
+
+        // 通知 UI 流刷新（ViewModel 的 StateFlow 是启动快照，不刷则设置界面显示旧值）
+        runCatching {
+            (context.applicationContext as? com.kenjc.pagekit.PageKitApp)
+                ?.homeViewModel?.onExternalConfigChanged()
+        }.onFailure { Log.w(TAG, "ui refresh notify failed: ${it.message}") }
     }
 
     companion object {

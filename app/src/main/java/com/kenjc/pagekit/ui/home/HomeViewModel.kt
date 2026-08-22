@@ -83,6 +83,14 @@ class HomeViewModel(
     private val _proxyConfig = MutableStateFlow(proxySettings.load())
     val proxyConfig: StateFlow<ProxyConfig> = _proxyConfig.asStateFlow()
 
+    /** 广播/adb 写入配置后的通知入口：刷新 UI 流（设置对话框、并发数等立即反映新值）。 */
+    fun onExternalConfigChanged() {
+        _proxyConfig.value = proxySettings.load()
+        _screensaverTimeoutMs.value = screensaverSettings.load()
+        _maxSessions.value = screensaverSettings.loadMaxSessions()
+        _mcpToken.value = getApplication<PageKitApp>().mcpTokenStore.token
+    }
+
     /** MCP 访问 token：启动时固定，仅手动重置时更换（见 [resetMcpToken]）。 */
     private val _mcpToken = MutableStateFlow(getApplication<PageKitApp>().mcpTokenStore.token)
     val mcpToken: StateFlow<String> = _mcpToken.asStateFlow()
