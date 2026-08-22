@@ -108,6 +108,12 @@ class MultiProfileSessionGateway(
     val activeWebView: StateFlow<WebView?> get() = localSessions.activeWebView
     val activeSessionId: StateFlow<String?> get() = localSessions.activeSessionId
 
+    /** 动态调整每 profile 的最大并发 session 数，并立即收缩默认 profile 池。 */
+    suspend fun setMaxSessions(value: Int) {
+        localSessions.maxSessions = value
+        localSessions.shrinkToLimit()
+    }
+
     override suspend fun search(sessionId: String, query: String, engine: String, limit: Int): List<SearchHit> =
         routed(sessionId, ProfileWorkerOperations.SEARCH, buildJsonObject {
             put("query", query); put("engine", engine); put("limit", limit)

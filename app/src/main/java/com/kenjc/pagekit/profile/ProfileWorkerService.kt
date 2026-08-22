@@ -238,7 +238,7 @@ open class ProfileWorkerService : Service() {
             registry = BrowserSessionRegistry(
                 profileId = profileId,
                 processSlot = slot,
-                maxSessions = 4,
+                initialMaxSessions = com.kenjc.pagekit.ui.screensaver.ScreensaverSettings(this@ProfileWorkerService).loadMaxSessions(),
                 factory = BrowserSessionFactory { sessionId -> createSession(profileId, sessionId) },
             )
         }

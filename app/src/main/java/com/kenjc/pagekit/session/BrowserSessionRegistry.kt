@@ -25,7 +25,7 @@ class BrowserSessionRegistry(
     private val processSlot: Int,
     private val factory: BrowserSessionFactory,
     defaultSession: BrowserSessionComponents? = null,
-    private val maxSessions: Int = 4,
+    initialMaxSessions: Int = 4,
 ) {
     private data class Entry(
         val components: BrowserSessionComponents,
@@ -40,6 +40,14 @@ class BrowserSessionRegistry(
     private val defaultFactory: (suspend () -> BrowserSessionComponents)? =
         defaultSession?.let { { it } }
 
+    /** 每 profile 最大并发 session 数（含 default）；可在运行期调整，缩小后逐步淘汰超额空闲 session。 */
+    @Volatile
+    var maxSessions: Int = initialMaxSessions
+        set(value) {
+            require(value in 1..8) { "maxSessions must be between 1 and 8" }
+            field = value
+        }
+
     /** UI 跟随的活跃 WebView（正在执行操作的 session）；null = 空闲，UI 显示占位。 */
     private val _activeWebView = MutableStateFlow<WebView?>(null)
     val activeWebView: StateFlow<WebView?> = _activeWebView.asStateFlow()
@@ -51,7 +59,6 @@ class BrowserSessionRegistry(
     init {
         require(PROFILE_ID.matches(profileId)) { "invalid profile_id" }
         require(processSlot in 0..3) { "invalid process slot" }
-        require(maxSessions in 1..8) { "maxSessions must be between 1 and 8" }
         if (defaultSession != null) {
             val now = System.currentTimeMillis()
             entries[DEFAULT_SESSION_ID] = Entry(defaultSession, now, now, isDefault = true)
@@ -254,6 +261,34 @@ class BrowserSessionRegistry(
             entries[sessionId] = entry
         }
         return entry
+    }
+
+    /**
+     * 调整容量后的收缩：销毁超配额的空闲 session（忙的等它下次回到池里自然淘汰）。
+     * default 永不淘汰。
+     */
+    suspend fun shrinkToLimit() {
+        val victims = registryMutex.withLock {
+            val pool = entries.filterKeys { it != DEFAULT_SESSION_ID }
+            val excess = (entries.size - maxSessions).coerceAtLeast(0)
+            if (excess <= 0) return
+            val candidates = pool.entries.sortedBy { it.value.lastAccessEpochMs }
+            candidates.take(excess).mapNotNull { (id, entry) ->
+                if (entry.operationMutex.tryLock()) {
+                    entries.remove(id)
+                    entry
+                } else {
+                    null
+                }
+            }
+        }
+        victims.forEach { entry ->
+            try {
+                entry.components.destroy()
+            } finally {
+                entry.operationMutex.unlock()
+            }
+        }
     }
 
     private fun sessionId(entry: Entry): String =

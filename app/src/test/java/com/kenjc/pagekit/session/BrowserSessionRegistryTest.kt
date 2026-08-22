@@ -27,7 +27,7 @@ class BrowserSessionRegistryTest {
         val registry = BrowserSessionRegistry(
             profileId = "test",
             processSlot = 0,
-            maxSessions = 3,
+            initialMaxSessions = 3,
             factory = BrowserSessionFactory { id ->
                 val runtime = FakeRuntime(concurrent, maxConcurrent).also { runtimes[id] = it }
                 val closed = AtomicBoolean().also { destroyed[id] = it }
@@ -73,7 +73,7 @@ class BrowserSessionRegistryTest {
         val registry = BrowserSessionRegistry(
             profileId = "test",
             processSlot = 0,
-            maxSessions = 4,
+            initialMaxSessions = 4,
             factory = BrowserSessionFactory { id ->
                 val closed = AtomicBoolean().also { destroyed[id] = it }
                 BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = { closed.set(true) })
@@ -95,7 +95,7 @@ class BrowserSessionRegistryTest {
         val registry = BrowserSessionRegistry(
             profileId = "test",
             processSlot = 0,
-            maxSessions = 4,
+            initialMaxSessions = 4,
             factory = BrowserSessionFactory { id ->
                 BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = {})
             },
@@ -111,7 +111,7 @@ class BrowserSessionRegistryTest {
         val registry = BrowserSessionRegistry(
             profileId = "test",
             processSlot = 0,
-            maxSessions = 2,
+            initialMaxSessions = 2,
             factory = BrowserSessionFactory { id ->
                 val closed = AtomicBoolean().also { destroyed[id] = it }
                 BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = { closed.set(true) })

@@ -101,6 +101,18 @@ class HomeViewModel(
         _screensaverTimeoutMs.value = value
     }
 
+    /** 每 profile 最大并发 session 数（含 default）；调整后立即收缩主进程池，worker 进程下次重建生效。 */
+    private val _maxSessions = MutableStateFlow(screensaverSettings.loadMaxSessions())
+    val maxSessions: StateFlow<Int> = _maxSessions.asStateFlow()
+
+    fun saveMaxSessions(value: Int) {
+        screensaverSettings.saveMaxSessions(value)
+        _maxSessions.value = value
+        viewModelScope.launch {
+            getApplication<PageKitApp>().sessionGateway.setMaxSessions(value)
+        }
+    }
+
     fun saveProxyConfig(enabled: Boolean, host: String, port: Int, bypass: String) {
         val config = ProxyConfig(enabled = enabled, host = host, port = port, bypass = bypass)
         proxySettings.save(config)

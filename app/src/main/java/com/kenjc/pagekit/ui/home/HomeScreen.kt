@@ -82,6 +82,7 @@ fun HomeScreen(
     val proxyConfig by vm.proxyConfig.collectAsStateWithLifecycle()
     val mcpToken by vm.mcpToken.collectAsStateWithLifecycle()
     val screensaverTimeoutMs by vm.screensaverTimeoutMs.collectAsStateWithLifecycle()
+    val maxSessions by vm.maxSessions.collectAsStateWithLifecycle()
     val activeWebView by vm.activeWebView.collectAsStateWithLifecycle()
     val activeSessionId by vm.activeSessionId.collectAsStateWithLifecycle()
 
@@ -244,7 +245,9 @@ fun HomeScreen(
             config = proxyConfig,
             mcpToken = mcpToken,
             screensaverTimeoutMs = screensaverTimeoutMs,
+            maxSessions = maxSessions,
             onSaveScreensaverTimeout = { vm.saveScreensaverTimeout(it) },
+            onSaveMaxSessions = { vm.saveMaxSessions(it) },
             onResetToken = { vm.resetMcpToken() },
             onDismiss = { showProxyDialog = false },
             onSave = { enabled, host, port, bypass ->
@@ -483,12 +486,15 @@ private fun BoxScope.ElementsPanel(vm: HomeViewModel) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun ProxySettingsDialog(
     config: com.kenjc.pagekit.net.ProxyConfig,
     mcpToken: String,
     screensaverTimeoutMs: Long,
+    maxSessions: Int,
     onSaveScreensaverTimeout: (Long) -> Unit,
+    onSaveMaxSessions: (Int) -> Unit,
     onResetToken: () -> Unit,
     onDismiss: () -> Unit,
     onSave: (enabled: Boolean, host: String, port: Int, bypass: String) -> Unit,
@@ -500,6 +506,7 @@ private fun ProxySettingsDialog(
     var portError by remember { mutableStateOf(false) }
     var tokenCopied by remember { mutableStateOf(false) }
     var confirmResetToken by remember { mutableStateOf(false) }
+    var settingsTab by rememberSaveable { mutableIntStateOf(0) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
     AlertDialog(
@@ -516,93 +523,165 @@ private fun ProxySettingsDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         },
-        title = { Text("代理设置") },
+        title = { Text("设置") },
         text = {
-            Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = enabled, onCheckedChange = { enabled = it })
-                    Text("启用代理（仅 WebView）")
-                }
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("代理地址") },
-                    placeholder = { Text("如 127.0.0.1") },
-                    singleLine = true,
-                    enabled = enabled,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = port,
-                    onValueChange = {
-                        port = it.filter { c -> c.isDigit() }
-                        portError = port.isNotBlank() && (port.toIntOrNull()?.let { p -> p !in 1..65535 } ?: true)
-                    },
-                    label = { Text("端口") },
-                    placeholder = { Text("如 7890") },
-                    singleLine = true,
-                    isError = portError,
-                    supportingText = if (portError) ({ Text("端口范围 1-65535") }) else null,
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = enabled,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = bypass,
-                    onValueChange = { bypass = it },
-                    label = { Text("不走代理的地址") },
-                    placeholder = { Text("如 localhost;10.0.0.0/8;*.local") },
-                    supportingText = { Text("分号分隔，留空表示全部走代理") },
-                    singleLine = true,
-                    enabled = enabled,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                androidx.compose.material3.HorizontalDivider()
-                Text(
-                    "屏保闲置进入时间",
-                    style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val options = remember {
-                        listOf(30_000L to "30秒", 60_000L to "1分", 120_000L to "2分", 300_000L to "5分", 0L to "关闭")
-                    }
-                    options.forEach { (value, label) ->
-                        androidx.compose.material3.FilterChip(
-                            selected = screensaverTimeoutMs == value,
-                            onClick = { onSaveScreensaverTimeout(value) },
-                            label = { Text(label) },
-                            modifier = Modifier.padding(end = 6.dp),
+            // 分页 + 可滚动：小屏（内容高度受限）也不会把操作按钮挤出可视区
+            Column {
+                TabRow(selectedTabIndex = settingsTab) {
+                    listOf("代理", "屏保", "并发", "Token").forEachIndexed { index, label ->
+                        Tab(
+                            selected = settingsTab == index,
+                            onClick = { settingsTab = index },
+                            text = { Text(label, maxLines = 1) },
                         )
                     }
                 }
-                Text(
-                    "顶栏月亮按钮可立即进入；应用启动后也会立即进入屏保。",
-                    fontSize = 12.sp,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                androidx.compose.material3.HorizontalDivider()
-                Text(
-                    "MCP 访问 Token",
-                    style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
-                )
-                Text(
-                    mcpToken,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                )
-                Text(
-                    "重启与应用更新均不变；重置后立即生效，旧 Token 立即失效。",
-                    fontSize = 12.sp,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row {
-                    TextButton(
-                        onClick = {
-                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(mcpToken))
-                            tokenCopied = true
-                        },
-                    ) { Text(if (tokenCopied) "已复制" else "复制") }
-                    TextButton(onClick = { confirmResetToken = true }) { Text("重置") }
+                androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(top = 12.dp),
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                ) {
+                    when (settingsTab) {
+                        0 -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = enabled, onCheckedChange = { enabled = it })
+                                Text("启用代理（仅 WebView）")
+                            }
+                            OutlinedTextField(
+                                value = host,
+                                onValueChange = { host = it },
+                                label = { Text("代理地址") },
+                                placeholder = { Text("如 127.0.0.1") },
+                                singleLine = true,
+                                enabled = enabled,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
+                                value = port,
+                                onValueChange = {
+                                    port = it.filter { c -> c.isDigit() }
+                                    portError = port.isNotBlank() && (port.toIntOrNull()?.let { p -> p !in 1..65535 } ?: true)
+                                },
+                                label = { Text("端口") },
+                                placeholder = { Text("如 7890") },
+                                singleLine = true,
+                                isError = portError,
+                                supportingText = if (portError) ({ Text("端口范围 1-65535") }) else null,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                                enabled = enabled,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
+                                value = bypass,
+                                onValueChange = { bypass = it },
+                                label = { Text("不走代理的地址") },
+                                placeholder = { Text("如 localhost;10.0.0.0/8;*.local") },
+                                supportingText = { Text("分号分隔，留空表示全部走代理") },
+                                singleLine = true,
+                                enabled = enabled,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        1 -> {
+                            Text(
+                                "闲置进入时间",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            )
+                            // FlowRow：窄屏自动换行，不会溢出
+                            androidx.compose.foundation.layout.FlowRow(
+                                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+                            ) {
+                                listOf(30_000L to "30秒", 60_000L to "1分", 120_000L to "2分", 300_000L to "5分", 0L to "关闭")
+                                    .forEach { (value, label) ->
+                                        androidx.compose.material3.FilterChip(
+                                            selected = screensaverTimeoutMs == value,
+                                            onClick = { onSaveScreensaverTimeout(value) },
+                                            label = { Text(label) },
+                                        )
+                                    }
+                            }
+                            Text(
+                                "顶栏锁图标可立即进入；应用启动后也会立即进入屏保。",
+                                fontSize = 12.sp,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        2 -> {
+                            Text(
+                                "每 Profile 的最大并发 Session 数",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            )
+                            var concurrencyExpanded by remember { mutableStateOf(false) }
+                            androidx.compose.material3.ExposedDropdownMenuBox(
+                                expanded = concurrencyExpanded,
+                                onExpandedChange = { concurrencyExpanded = it },
+                            ) {
+                                androidx.compose.material3.OutlinedTextField(
+                                    value = "$maxSessions",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("并发数") },
+                                    trailingIcon = {
+                                        androidx.compose.material3.ExposedDropdownMenuDefaults.TrailingIcon(expanded = concurrencyExpanded)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .menuAnchor(androidx.compose.material3.MenuAnchorType.PrimaryNotEditable),
+                                )
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = concurrencyExpanded,
+                                    onDismissRequest = { concurrencyExpanded = false },
+                                ) {
+                                    (1..8).forEach { value ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text("$value 个 Session" + if (value == 4) "（默认）" else "") },
+                                            onClick = {
+                                                onSaveMaxSessions(value)
+                                                concurrencyExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                "无 session_id 调用时的自动池上限；调小立即收缩，worker 进程下次重建生效。",
+                                fontSize = 12.sp,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> {
+                            Text(
+                                "MCP 访问 Token",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            )
+                            // 单行等宽截断：任何屏宽都不撑破布局
+                            Text(
+                                mcpToken,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row {
+                                TextButton(
+                                    onClick = {
+                                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(mcpToken))
+                                        tokenCopied = true
+                                    },
+                                ) { Text(if (tokenCopied) "已复制" else "复制") }
+                                TextButton(onClick = { confirmResetToken = true }) { Text("重置") }
+                            }
+                            Text(
+                                "重启与应用更新均不变；重置后立即生效，旧 Token 立即失效。",
+                                fontSize = 12.sp,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         },

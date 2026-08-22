@@ -106,7 +106,7 @@ class PageKitApp : Application() {
             profileId = DEFAULT_PROFILE_ID,
             processSlot = 0,
             defaultSession = BrowserSessionComponents(api = pageKitApi, destroy = {}, webView = runtime.loader.webView),
-            maxSessions = 4,
+            initialMaxSessions = com.kenjc.pagekit.ui.screensaver.ScreensaverSettings(this).loadMaxSessions(),
             factory = BrowserSessionFactory { sessionId ->
                 withContext(Dispatchers.Main.immediate) {
                     val sessionRuntime = AndroidPageKitRuntime(
