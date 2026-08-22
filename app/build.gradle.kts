@@ -76,10 +76,27 @@ android {
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+            )
+        }
+    }
+
+    packaging {
+        resources {
+            // flexmark 的 emoji 映射（~720KB）与依赖变更日志：html2md 用不到
+            excludes += listOf(
+                "EmojiReference.txt",
+                "META-INF/CHANGES",
+                "META-INF/CHANGES.md",
+                "META-INF/README.md",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE.md",
+                "META-INF/DEPENDENCIES",
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
             )
         }
     }
@@ -119,4 +136,15 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.mcp.kotlin.client)
     testImplementation(libs.mcp.kotlin.testing)
+}
+
+// 验证用：可调试的 release（同 R8/签名，便于 run-as 取 token 冒烟；CI/发布不受影响）
+android {
+    buildTypes {
+        create("releaseDebuggable") {
+            initWith(getByName("release"))
+            isDebuggable = true
+            matchingFallbacks += listOf("release")
+        }
+    }
 }
