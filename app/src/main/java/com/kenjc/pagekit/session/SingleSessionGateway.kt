@@ -45,6 +45,9 @@ class SingleSessionGateway(
         requireDefault(sessionId); return api.fetchDetailed(request)
     }
 
+    override suspend fun fetchAuto(request: FetchRequest): Pair<String, RuntimePageResult> =
+        DEFAULT_SESSION_ID to api.fetchDetailed(request)
+
     override suspend fun search(sessionId: String, query: String, engine: String, limit: Int): List<SearchHit> {
         requireDefault(sessionId); return api.searchResults(query, engine, limit)
     }

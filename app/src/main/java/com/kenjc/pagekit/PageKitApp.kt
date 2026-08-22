@@ -105,7 +105,7 @@ class PageKitApp : Application() {
         val localSessions = BrowserSessionRegistry(
             profileId = DEFAULT_PROFILE_ID,
             processSlot = 0,
-            defaultSession = BrowserSessionComponents(pageKitApi) { /* UI owns the default WebView lifecycle. */ },
+            defaultSession = BrowserSessionComponents(api = pageKitApi, destroy = {}, webView = runtime.loader.webView),
             maxSessions = 4,
             factory = BrowserSessionFactory { sessionId ->
                 withContext(Dispatchers.Main.immediate) {
@@ -118,9 +118,11 @@ class PageKitApp : Application() {
                             namespace = "p0_default_$sessionId",
                         ),
                     )
-                    BrowserSessionComponents(DefaultPageKitApi(sessionRuntime)) {
-                        withContext(Dispatchers.Main.immediate) { sessionRuntime.destroy() }
-                    }
+                    BrowserSessionComponents(
+                        api = DefaultPageKitApi(sessionRuntime),
+                        destroy = { withContext(Dispatchers.Main.immediate) { sessionRuntime.destroy() } },
+                        webView = sessionRuntime.loader.webView,
+                    )
                 }
             },
         )

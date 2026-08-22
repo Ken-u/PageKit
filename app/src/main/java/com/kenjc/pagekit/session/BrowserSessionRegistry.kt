@@ -1,12 +1,18 @@
 package com.kenjc.pagekit.session
 
+import android.webkit.WebView
 import com.kenjc.pagekit.api.DefaultPageKitApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class BrowserSessionComponents(
     val api: DefaultPageKitApi,
     val destroy: suspend () -> Unit,
+    /** 该 session 的 WebView，供 UI 上屏跟随（headless 进程里也始终存在）。 */
+    val webView: android.webkit.WebView? = null,
 )
 
 fun interface BrowserSessionFactory {
@@ -31,6 +37,16 @@ class BrowserSessionRegistry(
 
     private val registryMutex = Mutex()
     private val entries = linkedMapOf<String, Entry>()
+    private val defaultFactory: (suspend () -> BrowserSessionComponents)? =
+        defaultSession?.let { { it } }
+
+    /** UI 跟随的活跃 WebView（正在执行操作的 session）；null = 空闲，UI 显示占位。 */
+    private val _activeWebView = MutableStateFlow<WebView?>(null)
+    val activeWebView: StateFlow<WebView?> = _activeWebView.asStateFlow()
+
+    /** 最近一次活跃的 session id，供 UI 标注当前上屏的是谁。 */
+    private val _activeSessionId = MutableStateFlow<String?>(null)
+    val activeSessionId: StateFlow<String?> = _activeSessionId.asStateFlow()
 
     init {
         require(PROFILE_ID.matches(profileId)) { "invalid profile_id" }
@@ -151,19 +167,98 @@ class BrowserSessionRegistry(
     }
 
     suspend fun <T> withApi(sessionId: String, block: suspend (DefaultPageKitApi) -> T): T {
-        val entry = registryMutex.withLock {
-            val found = entries[sessionId] ?: error("unknown session_id: $sessionId")
-            // 在注册表锁内取得 operation lease，避免 close 在查找与执行之间销毁 WebView。
-            found.operationMutex.lock()
-            found
+        val entry = if (sessionId == DEFAULT_SESSION_ID) {
+            val e = ensureDefault()
+            e.operationMutex.lock()
+            e
+        } else {
+            registryMutex.withLock {
+                val found = entries[sessionId] ?: error("unknown session_id: $sessionId")
+                // 在注册表锁内取得 operation lease，避免 close 在查找与执行之间销毁 WebView。
+                found.operationMutex.lock()
+                found
+            }
         }
         return try {
             entry.lastAccessEpochMs = System.currentTimeMillis()
+            publishActive(sessionId, entry)
             block(entry.components.api)
         } finally {
             entry.operationMutex.unlock()
         }
     }
+
+    /** default 懒创建：仅当显式以 default 调用且尚无实例时，用注入的 default 组件建一个。 */
+    private suspend fun ensureDefault(): Entry {
+        registryMutex.withLock {
+            entries[DEFAULT_SESSION_ID]?.let { return it }
+            val components = requireNotNull(defaultFactory) {
+                "this profile does not host the default UI session"
+            }()
+            val now = System.currentTimeMillis()
+            return Entry(components, now, now, isDefault = true).also {
+                entries[DEFAULT_SESSION_ID] = it
+            }
+        }
+    }
+
+    private fun publishActive(sessionId: String, entry: Entry) {
+        _activeSessionId.value = sessionId
+        _activeWebView.value = entry.components.webView
+    }
+
+    /**
+     * 自动分配：优先复用空闲的非默认 session；全忙且未满则新建；满了排队最久未用的。
+     * 返回 (session_id, 结果)，session_id 用于回显给调用方做后续固定路由。
+     */
+    suspend fun <T> withAnyApi(block: suspend (DefaultPageKitApi) -> T): Pair<String, T> {
+        var existing = registryMutex.withLock {
+            entries.values
+                .filter { !it.isDefault }
+                .sortedBy { it.lastAccessEpochMs }
+                .firstOrNull { it.operationMutex.tryLock() }
+                ?: entries.values
+                    .filter { !it.isDefault }
+                    .minByOrNull { it.lastAccessEpochMs }
+                    ?.let { pick ->
+                        registryMutex.unlock()
+                        pick.operationMutex.lock()
+                        registryMutex.lock()
+                        pick
+                    }
+        }
+        if (existing == null) {
+            val sid = newSessionId(processSlot)
+            existing = createInternal(sid)
+            existing.operationMutex.lock()
+        }
+        val sid = registryMutex.withLock { sessionId(existing) }
+        return try {
+            existing.lastAccessEpochMs = System.currentTimeMillis()
+            publishActive(sid, existing)
+            sid to block(existing.components.api)
+        } finally {
+            existing.operationMutex.unlock()
+        }
+    }
+
+    /** 创建非默认 session（不走公开 create 的两段式淘汰，专供内部池使用）。 */
+    private suspend fun createInternal(sessionId: String): Entry {
+        val components = factory.create(sessionId)
+        val now = System.currentTimeMillis()
+        val entry = Entry(components, now, now, isDefault = false)
+        registryMutex.withLock {
+            require(entries.size < maxSessions) {
+                "profile $profileId reached the $maxSessions session limit"
+            }
+            entries[sessionId] = entry
+        }
+        return entry
+    }
+
+    private fun sessionId(entry: Entry): String =
+        entries.entries.firstOrNull { it.value === entry }?.key
+            ?: error("session entry not registered")
 
     private fun Entry.info(sessionId: String, url: String = "") = SessionInfo(
         sessionId = sessionId,
@@ -178,5 +273,11 @@ class BrowserSessionRegistry(
     companion object {
         val PROFILE_ID = Regex("[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}")
         val SESSION_ID = Regex("(?:default|s[0-3]_[a-f0-9]{16})")
+        private val random = java.security.SecureRandom()
+
+        internal fun newSessionId(processSlot: Int): String {
+            val bytes = ByteArray(8).also(random::nextBytes)
+            return "s${processSlot}_" + bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
     }
 }

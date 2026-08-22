@@ -82,6 +82,8 @@ fun HomeScreen(
     val proxyConfig by vm.proxyConfig.collectAsStateWithLifecycle()
     val mcpToken by vm.mcpToken.collectAsStateWithLifecycle()
     val screensaverTimeoutMs by vm.screensaverTimeoutMs.collectAsStateWithLifecycle()
+    val activeWebView by vm.activeWebView.collectAsStateWithLifecycle()
+    val activeSessionId by vm.activeSessionId.collectAsStateWithLifecycle()
 
     var showProxyDialog by rememberSaveable { mutableStateOf(false) }
 
@@ -100,7 +102,7 @@ fun HomeScreen(
         modifier = modifier,
         topBar = {
             TopAppBar(
-                title = { Text("PageKit") },
+                title = { Text(if (activeSessionId != null) "PageKit · $activeSessionId" else "PageKit") },
                 actions = {
                     IconButton(onClick = onEnterScreensaver) {
                         Icon(Icons.Default.Lock, contentDescription = "立即进入屏保")
@@ -208,7 +210,19 @@ fun HomeScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when (selectedTab) {
                     0 -> {
-                        WebViewTab(webView = vm.loader.webView)
+                        // 跟随当前活跃 session 的 WebView：Agent 在哪个页面干活，屏上就显示哪个。
+                        val currentWebView = activeWebView
+                        if (currentWebView != null) {
+                            WebViewTab(webView = currentWebView)
+                        } else {
+                            Box(Modifier.fillMaxSize()) {
+                                Text(
+                                    "等待任务…\nAgent 请求到达后此处显示对应页面",
+                                    modifier = Modifier.align(Alignment.Center),
+                                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                         if (loadState is LoadState.Loading) {
                             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                         }

@@ -53,6 +53,12 @@ class HomeViewModel(
     /** UI 与 API 共用 default Session 的 WebView。 */
     val loader = runtime.loader
 
+    /** 当前活跃 session 的 WebView 与 id（懒取：gateway 晚于 ViewModel 初始化）。 */
+    val activeWebView: kotlinx.coroutines.flow.StateFlow<android.webkit.WebView?>
+        get() = getApplication<PageKitApp>().sessionGateway.activeWebView
+    val activeSessionId: kotlinx.coroutines.flow.StateFlow<String?>
+        get() = getApplication<PageKitApp>().sessionGateway.activeSessionId
+
     val loadState: StateFlow<LoadState> = loader.state
     val canGoBack: StateFlow<Boolean> = loader.canGoBack
 

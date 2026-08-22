@@ -53,15 +53,17 @@ class PageKitUsageTools(
                 validateRemoteUrl(url)
                 val mode = h.str(args, "mode") ?: "raw"
                 validateMode(mode, h.str(args, "intent"))
-                val result = gateway.fetch(
-                    sessionId = h.str(args, "session_id") ?: DEFAULT_SESSION_ID,
-                    request = FetchRequest(
-                        url = url,
-                        intent = h.str(args, "intent"),
-                        mode = mode,
-                    ),
+                val fetchRequest = FetchRequest(
+                    url = url,
+                    intent = h.str(args, "intent"),
+                    mode = mode,
                 )
+                // 未指定 session_id：从空闲池自动分配（并行友好），并回显以便后续固定路由。
+                val (sessionId, result) = h.str(args, "session_id")?.let {
+                    it to gateway.fetch(it, fetchRequest)
+                } ?: gateway.fetchAuto(fetchRequest)
                 buildJsonObject {
+                    put("session_id", sessionId)
                     put("page", h.json.encodeToJsonElement(result.page))
                     put("markdown", result.markdown)
                     put("byline", result.byline)

@@ -38,6 +38,13 @@ interface PageKitSessionGateway {
     suspend fun closeSession(sessionId: String): Boolean
 
     suspend fun fetch(sessionId: String, request: FetchRequest): RuntimePageResult
+
+    /**
+     * 自动分配 session 的 fetch：优先复用空闲池 session，全忙且未满则新建。
+     * 供"调用方未指定 session_id"的场景并行使用；返回 (session_id, 结果)，
+     * 调用方应把 session_id 回显，便于后续操作固定路由到同一 WebView。
+     */
+    suspend fun fetchAuto(request: FetchRequest): Pair<String, RuntimePageResult>
     suspend fun search(sessionId: String, query: String, engine: String, limit: Int): List<SearchHit>
     suspend fun expand(sessionId: String, pageId: String?, section: String): ExpandedSection
     suspend fun snapshot(sessionId: String): List<String>

@@ -254,9 +254,10 @@ open class ProfileWorkerService : Service() {
                         namespace = "p${slot}_${profileId}_${sessionId}",
                     ),
                 )
-                BrowserSessionComponents(DefaultPageKitApi(runtime)) {
-                    withContext(Dispatchers.Main.immediate) { runtime.destroy() }
-                }
+                BrowserSessionComponents(
+                    api = DefaultPageKitApi(runtime),
+                    destroy = { withContext(Dispatchers.Main.immediate) { runtime.destroy() } },
+                )
             }
 
         private fun requireActive(profileId: String): BrowserSessionRegistry {

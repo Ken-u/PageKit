@@ -31,7 +31,7 @@ class BrowserSessionRegistryTest {
             factory = BrowserSessionFactory { id ->
                 val runtime = FakeRuntime(concurrent, maxConcurrent).also { runtimes[id] = it }
                 val closed = AtomicBoolean().also { destroyed[id] = it }
-                BrowserSessionComponents(DefaultPageKitApi(runtime)) { closed.set(true) }
+                BrowserSessionComponents(api = DefaultPageKitApi(runtime), destroy = { closed.set(true) })
             },
         )
         val first = registry.create("s0_0000000000000001")
@@ -60,7 +60,7 @@ class BrowserSessionRegistryTest {
             val registry = BrowserSessionRegistry(
                 profileId = DEFAULT_PROFILE_ID,
                 processSlot = 0,
-                defaultSession = BrowserSessionComponents(DefaultPageKitApi(runtime)) {},
+                defaultSession = BrowserSessionComponents(api = DefaultPageKitApi(runtime), destroy = {}),
                 factory = BrowserSessionFactory { error("not used") },
             )
             registry.close(DEFAULT_SESSION_ID)
@@ -76,7 +76,7 @@ class BrowserSessionRegistryTest {
             maxSessions = 4,
             factory = BrowserSessionFactory { id ->
                 val closed = AtomicBoolean().also { destroyed[id] = it }
-                BrowserSessionComponents(DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger()))) { closed.set(true) }
+                BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = { closed.set(true) })
             },
         )
         val old = registry.create("s0_0000000000000001")
@@ -97,7 +97,7 @@ class BrowserSessionRegistryTest {
             processSlot = 0,
             maxSessions = 4,
             factory = BrowserSessionFactory { id ->
-                BrowserSessionComponents(DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger()))) {}
+                BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = {})
             },
         )
         registry.create("s0_0000000000000001")
@@ -114,7 +114,7 @@ class BrowserSessionRegistryTest {
             maxSessions = 2,
             factory = BrowserSessionFactory { id ->
                 val closed = AtomicBoolean().also { destroyed[id] = it }
-                BrowserSessionComponents(DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger()))) { closed.set(true) }
+                BrowserSessionComponents(api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())), destroy = { closed.set(true) })
             },
         )
         registry.create("s0_0000000000000001")

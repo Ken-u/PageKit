@@ -1,6 +1,7 @@
 package com.kenjc.pagekit.session
 
 import android.content.Context
+import android.webkit.WebView
 import com.kenjc.pagekit.api.dto.ExpandedSection
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.engine.SearchHit
@@ -11,6 +12,7 @@ import com.kenjc.pagekit.profile.ProfileWorkerRequest
 import com.kenjc.pagekit.profile.ProfileWorkerResponse
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import java.security.SecureRandom
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -98,6 +100,13 @@ class MultiProfileSessionGateway(
         }, local = { api -> api.fetchDetailed(request) }) { result ->
             json.decodeFromJsonElement(result.getValue("result"))
         }
+
+    override suspend fun fetchAuto(request: FetchRequest): Pair<String, RuntimePageResult> =
+        localSessions.withAnyApi { it.fetchDetailed(request) }
+
+    /** 默认 profile 的活跃 WebView 流（当前正在执行的 session），供 UI 上屏跟随。 */
+    val activeWebView: StateFlow<WebView?> get() = localSessions.activeWebView
+    val activeSessionId: StateFlow<String?> get() = localSessions.activeSessionId
 
     override suspend fun search(sessionId: String, query: String, engine: String, limit: Int): List<SearchHit> =
         routed(sessionId, ProfileWorkerOperations.SEARCH, buildJsonObject {
