@@ -8,6 +8,7 @@
 #   ./build.sh test         # JVM 单测
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh run [serial] [url] # 一键启动：构建→安装→启动 App→端口转发→打印连接信息
+#   ./build.sh token [serial]     # 打印设备上的 MCP token 与接入地址（debug/release 均可）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
@@ -119,7 +120,28 @@ pick_device() {
 
 # 设备寻址说明：各命令内部调用 pick_device，返回 serial 或 "-t <tid>"（TCP serial 失效时回退）
 
+# 从设备取 MCP token（广播触发 → logcat 读取；release 包无 run-as 时也适用）
+print_device_token() {
+    local dev="$1"
+    "$ADB" $dev logcat -c 2>/dev/null
+    "$ADB" $dev shell 'am broadcast -a com.kenjc.pagekit.MCP_TOKEN -n com.kenjc.pagekit/.mcp.McpTokenReceiver' >/dev/null 2>&1
+    sleep 1
+    "$ADB" $dev logcat -d -s PageKit.McpToken:I 2>/dev/null \
+        | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2
+}
+
 case "$CMD" in
+token)
+    # 打印设备上的 MCP token（debug/release 均可）
+    # 用法: ./build.sh token [serial]
+    DEV_ADDR=$(pick_device "${2:-}")
+    TOKEN=$(print_device_token "$DEV_ADDR")
+    [ -n "$TOKEN" ] || fail "读取失败：确认 App 已启动、设备已授权 adb"
+    DEVICE_IP=$("$ADB" $DEV_ADDR shell "ip -4 addr" 2>/dev/null \
+        | grep -oP 'inet \K[0-9.]+' | grep -v '^127\.' | head -1 | tr -d '\r\n')
+    echo "Token:  $TOKEN"
+    [ -n "$DEVICE_IP" ] && echo "MCP:    http://${DEVICE_IP}:3000/mcp  (Authorization: Bearer $TOKEN)"
+    ;;
 build)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon
     echo "✓ APK: app/build/outputs/apk/debug/app-debug.apk"
@@ -161,8 +183,11 @@ run)
 
     sleep 3
 
-    # 读取 MCP token
+    # 读取 MCP token：优先 run-as（debug 包），失败走广播+logcat（release 包也可用）
     TOKEN=$("$ADB" $DEV_ADDR shell "run-as $PKG cat files/mcp_token.txt" 2>/dev/null | tr -d '\r\n')
+    if [ -z "$TOKEN" ]; then
+        TOKEN=$(print_device_token "$DEV_ADDR")
+    fi
 
     # 获取设备局域网 IP（MCP 监听 0.0.0.0，可直接通过 IP 访问）
     DEVICE_IP=$("$ADB" $DEV_ADDR shell "ip -4 addr" 2>/dev/null \
