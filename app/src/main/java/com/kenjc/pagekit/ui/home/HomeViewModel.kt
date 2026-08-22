@@ -91,6 +91,11 @@ class HomeViewModel(
         _mcpToken.value = getApplication<PageKitApp>().mcpTokenStore.reset()
     }
 
+    /** 设置为指定 token（恢复/迁移用）：校验格式后持久化并立即生效。 */
+    fun setMcpToken(value: String) {
+        _mcpToken.value = getApplication<PageKitApp>().mcpTokenStore.set(value.trim())
+    }
+
     /** 屏保闲置时长（ms），0 表示关闭闲置自动进入；立即生效。 */
     private val screensaverSettings = ScreensaverSettings(getApplication())
     private val _screensaverTimeoutMs = MutableStateFlow(screensaverSettings.load())

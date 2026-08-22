@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kenjc.pagekit.PageKitApp
 import com.kenjc.pagekit.compress.PromptBuilder
 import com.kenjc.pagekit.engine.LoadState
+import com.kenjc.pagekit.mcp.McpTokenStore
 
 /** 顶部视图 Tab，顺序与 PLAN.md 一致：网页 / Markdown / JSON / Prompt */
 private val VIEW_TABS = listOf("网页", "Markdown", "JSON", "Prompt")
@@ -249,6 +250,7 @@ fun HomeScreen(
             onSaveScreensaverTimeout = { vm.saveScreensaverTimeout(it) },
             onSaveMaxSessions = { vm.saveMaxSessions(it) },
             onResetToken = { vm.resetMcpToken() },
+            onSetToken = { vm.setMcpToken(it) },
             onDismiss = { showProxyDialog = false },
             onSave = { enabled, host, port, bypass ->
                 vm.saveProxyConfig(enabled, host, port, bypass)
@@ -496,6 +498,7 @@ private fun ProxySettingsDialog(
     onSaveScreensaverTimeout: (Long) -> Unit,
     onSaveMaxSessions: (Int) -> Unit,
     onResetToken: () -> Unit,
+    onSetToken: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onSave: (enabled: Boolean, host: String, port: Int, bypass: String) -> Unit,
 ) {
@@ -674,6 +677,31 @@ private fun ProxySettingsDialog(
                                     },
                                 ) { Text(if (tokenCopied) "已复制" else "复制") }
                                 TextButton(onClick = { confirmResetToken = true }) { Text("重置") }
+                            }
+                            androidx.compose.material3.HorizontalDivider()
+                            Text(
+                                "设置为指定 Token（换机/重装后恢复原值，客户端无需改配置）",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                            )
+                            var customToken by rememberSaveable { mutableStateOf("") }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = customToken,
+                                    onValueChange = { customToken = it },
+                                    label = { Text("自定义 Token") },
+                                    placeholder = { Text("粘贴旧 Token") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(
+                                    onClick = {
+                                        if (McpTokenStore.TOKEN_PATTERN.matches(customToken.trim())) {
+                                            onSetToken(customToken.trim())
+                                            customToken = ""
+                                        }
+                                    },
+                                    enabled = McpTokenStore.TOKEN_PATTERN.matches(customToken.trim()),
+                                ) { Text("保存") }
                             }
                             Text(
                                 "重启与应用更新均不变；重置后立即生效，旧 Token 立即失效。",

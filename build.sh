@@ -9,6 +9,7 @@
 #   ./build.sh install [serial]   # 构建并安装到实机（默认取第一台 device）
 #   ./build.sh run [serial] [url] # 一键启动：构建→安装→启动 App→端口转发→打印连接信息
 #   ./build.sh token [serial]     # 打印设备上的 MCP token 与接入地址（debug/release 均可）
+#   ./build.sh set-token <token> [serial]  # 把设备 MCP token 设为指定值（重装后恢复配置）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
@@ -130,6 +131,30 @@ print_device_token() {
         | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2
 }
 
+# 从设备取 PIN（与 token 同一条日志）
+print_device_pin() {
+    local dev="$1"
+    "$ADB" $dev logcat -c 2>/dev/null
+    "$ADB" $dev shell 'am broadcast -a com.kenjc.pagekit.MCP_TOKEN -n com.kenjc.pagekit/.mcp.McpTokenReceiver' >/dev/null 2>&1
+    sleep 1
+    "$ADB" $dev logcat -d -s PageKit.McpToken:I 2>/dev/null \
+        | grep -oE 'pin=[0-9]+' | tail -1 | cut -d= -f2
+}
+
+# 设置设备上的 MCP token（恢复旧配置用）：set_device_token <dev> <token>
+set_device_token() {
+    local dev="$1" token="$2"
+    local pin
+    pin=$(print_device_pin "$dev")
+    [ -n "$pin" ] || return 1
+    "$ADB" $dev logcat -c 2>/dev/null
+    "$ADB" $dev shell "am broadcast -a com.kenjc.pagekit.MCP_TOKEN -n com.kenjc.pagekit/.mcp.McpTokenReceiver --es pin $pin --es set '$token'" >/dev/null 2>&1
+    sleep 1
+    local after
+    after=$(print_device_token "$dev")
+    [ "$after" = "$token" ]
+}
+
 case "$CMD" in
 token)
     # 打印设备上的 MCP token（debug/release 均可）
@@ -141,6 +166,18 @@ token)
         | grep -oP 'inet \K[0-9.]+' | grep -v '^127\.' | head -1 | tr -d '\r\n')
     echo "Token:  $TOKEN"
     [ -n "$DEVICE_IP" ] && echo "MCP:    http://${DEVICE_IP}:3000/mcp  (Authorization: Bearer $TOKEN)"
+    ;;
+set-token)
+    # 把设备 MCP token 设为指定值（换机/重装后恢复客户端配置）
+    # 用法: ./build.sh set-token <token> [serial]
+    SET_VALUE="${2:-}"
+    [ -n "$SET_VALUE" ] || fail "用法: ./build.sh set-token <token> [serial]"
+    DEV_ADDR=$(pick_device "${3:-}")
+    if set_device_token "$DEV_ADDR" "$SET_VALUE"; then
+        echo "✓ Token 已设置并验证：$SET_VALUE"
+    else
+        fail "设置失败：确认 App 已启动、token 格式正确（32-128 位 A-Za-z0-9_-）"
+    fi
     ;;
 build)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon
