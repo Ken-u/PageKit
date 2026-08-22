@@ -10,6 +10,7 @@
 #   ./build.sh run [serial] [url] # 一键启动：构建→安装→启动 App→端口转发→打印连接信息
 #   ./build.sh token [serial]     # 打印设备上的 MCP token 与接入地址（debug/release 均可）
 #   ./build.sh set-token <token> [serial]  # 把设备 MCP token 设为指定值（重装后恢复配置）
+#   ./build.sh load [serial]      # 从 .env 读取配置写入设备（token/代理/屏保/并发）
 #   ./build.sh verify [serial]    # 实机全链路验证（加载测试页→提取→md/json/prompt）
 #   ./build.sh mcptest [serial]   # 实机 MCP 鉴权、协议握手与 tools/list 验证
 #   ./build.sh providertest [serial] # 实机 Kimi SearchWeb provider 协议验证
@@ -178,6 +179,51 @@ set-token)
     else
         fail "设置失败：确认 App 已启动、token 格式正确（32-128 位 A-Za-z0-9_-）"
     fi
+    ;;
+load)
+    # 从 .env 读取配置写入设备（token/代理/屏保/并发）
+    # 用法: ./build.sh load [serial]
+    ENV_FILE="${PAGEKIT_ENV:-.env}"
+    [ -f "$ENV_FILE" ] || fail "未找到 $ENV_FILE（cp .env.example .env 后编辑）"
+    DEV_ADDR=$(pick_device "${2:-}")
+    pin=$(print_device_pin "$DEV_ADDR")
+    [ -n "$pin" ] || fail "读取 PIN 失败：确认 App 已启动"
+
+    ARGS=(-a com.kenjc.pagekit.MCP_TOKEN -n com.kenjc.pagekit/.mcp.McpTokenReceiver --es pin "$pin")
+    DESC=()
+
+    env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | head -1 | sed 's/^["'\'']//;s/["'\'']$//'; }
+
+    TOKEN_V=$(env_value PAGEKIT_TOKEN)
+    [ -n "$TOKEN_V" ] && ARGS+=(--es set "$TOKEN_V") && DESC+=("token")
+
+    PROXY_HOST_V=$(env_value PAGEKIT_PROXY_HOST)
+    PROXY_PORT_V=$(env_value PAGEKIT_PROXY_PORT)
+    if [ -n "$PROXY_HOST_V" ] && [ -n "$PROXY_PORT_V" ]; then
+        ARGS+=(--es proxy_host "$PROXY_HOST_V" --ei proxy_port "$PROXY_PORT_V")
+        [ -n "$(env_value PAGEKIT_PROXY_BYPASS)" ] && ARGS+=(--es proxy_bypass "$(env_value PAGEKIT_PROXY_BYPASS)")
+        case "$(env_value PAGEKIT_PROXY_ENABLED)" in
+            true|1|yes|y|Y|TRUE) ARGS+=(--ez proxy_enabled true);;
+            false|0|no|n|N|FALSE|"") ARGS+=(--ez proxy_enabled false);;
+        esac
+        DESC+=("proxy")
+    fi
+
+    SS_V=$(env_value PAGEKIT_SCREENSAVER_TIMEOUT_MS)
+    [ -n "$SS_V" ] && ARGS+=(--el screensaver_timeout_ms "$SS_V") && DESC+=("screensaver=${SS_V}ms")
+
+    MS_V=$(env_value PAGEKIT_MAX_SESSIONS)
+    [ -n "$MS_V" ] && ARGS+=(--ei max_sessions "$MS_V") && DESC+=("max_sessions=$MS_V")
+
+    [ ${#DESC[@]} -gt 0 ] || fail ".env 里没有可配置项"
+
+    "$ADB" $DEV_ADDR logcat -c 2>/dev/null
+    "$ADB" $DEV_ADDR shell am broadcast "${ARGS[@]}" >/dev/null 2>&1
+    sleep 1
+    RESULT=$("$ADB" $DEV_ADDR logcat -d -s PageKit.McpToken:I 2>/dev/null | grep 'config applied' | tail -1)
+    echo "已写入: ${DESC[*]}"
+    echo "$RESULT"
+    echo "$RESULT" | grep -q "config applied" || fail "写入未确认：检查 PIN/App 状态"
     ;;
 build)
     "$GRADLE_CMD" :app:assembleDebug --no-daemon

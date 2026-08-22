@@ -56,3 +56,7 @@ lint/tmp/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 本机设备配置（build.sh load 使用；含代理/token，不入库）
+.env
+.env.local
