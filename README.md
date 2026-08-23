@@ -66,7 +66,32 @@ PageKit 在 Android 设备上跑一个 MCP server，用真实 WebView 给 AI Age
 
 ## 快速开始
 
-### 构建
+### 部署（推荐：不用搭构建环境）
+
+从 release 页拿 APK，配合 `deploy.sh` 一条命令部署到设备——只要主机有 adb：
+
+```bash
+# 下载 deploy.sh 和 APK（或直接从 release 页下载）
+curl -O https://raw.githubusercontent.com/Ken-u/PageKit/main/deploy.sh && chmod +x deploy.sh
+
+./deploy.sh setup            # 一键：下载 APK → 安装 → 启动 → 打印连接信息
+```
+
+`deploy.sh` 其他命令：
+
+| 命令 | 说明 |
+|------|------|
+| `setup` | 一键：下载/安装 APK → 启动 → 打印连接信息（含 Claude Code 接入命令） |
+| `install [apk]` | 安装 APK（缺省自动从 GitHub latest release 下载） |
+| `run` | 启动 App → 打印连接信息 |
+| `token` | 打印设备上的 MCP token 和接入地址 |
+| `set-token <token>` | 设置 token（换机/重装后恢复，客户端配置不用改） |
+| `load` | 从 `.env` 读配置写入设备（token/代理/屏保/并发） |
+| `forward` | adb 端口转发（3000/3001 → 本机） |
+
+多台设备时 `PAGEKIT_DEVICE=<serial>` 指定；本地已有 APK 时 `PAGEKIT_APK=<路径>` 跳过下载。
+
+### 从源码构建
 
 ```bash
 ./build.sh release        # 构建签名 release APK
@@ -82,7 +107,7 @@ PageKit 在 Android 设备上跑一个 MCP server，用真实 WebView 给 AI Age
 ```bash
 cp .env.example .env
 # 编辑 .env，填入 token、代理地址等
-./build.sh load [serial]   # 从 .env 读取配置写入设备
+./deploy.sh load   # 或 ./build.sh load [serial]
 ```
 
 `.env` 已在 `.gitignore` 里，不会入库。支持配置项：
