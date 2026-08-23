@@ -11,9 +11,11 @@
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue" alt="License">
 </p>
 
-PageKit 把 Android WebView 变成一个 MCP server，让 AI agent 能浏览网页、过滤广告、提取结构化内容。跑在 Android 设备上（TV box、平板都行），agent 通过 MCP 协议远程调用。
+抽屉里吃灰的旧 Android 手机/平板，插上电就是一台 AI Agent 专属的浏览器。
 
-简单说就是：agent 说「帮我看看这个网页」，PageKit 用真机 WebView 打开页面，干掉广告和杂七杂八的东西，把干净的内容结构化返回。
+PageKit 在 Android 设备上跑一个 MCP server，用真实 WebView 给 AI Agent 提供稳定可靠的 web search / web fetch 能力。Agent 通过标准 MCP 协议远程调用，设备负责打开网页、过滤广告、提取干净的结构化内容返回。自带多会话并发、浏览器自动化交互、闲置屏保防烧屏。
+
+> 旧设备不闲置，AI 不缺联网。
 
 ## 能做什么
 
