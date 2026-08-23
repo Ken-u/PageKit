@@ -19,19 +19,40 @@ PageKit 在 Android 设备上跑一个 MCP server，用真实 WebView 给 AI Age
 
 ## 和其他方案的区别
 
-| | SearXNG / 免费 API | 收费搜索 API | **PageKit** |
-|---|---|---|---|
-| 运行方式 | 自建/公共实例 | 云端 SaaS | 旧 Android 设备本地跑 |
-| 动态页面 | 大多拿不到 JS 渲染结果 | 部分支持 | 真实 WebView 完整渲染 |
-| 反爬限制 | IP 容易被封 | 有 quota / 按次收费 | 手机环境，和真人浏览器一致 |
-| 持续成本 | 需要服务器 | 按调用付费 | 电费而已 |
-| 浏览器交互 | 不支持 | 不支持 | 点击/输入/滚动/选择 |
-| Cookie/登录态 | 不支持 | 不支持 | 多 profile 隔离，各自独立 |
-| 广告过滤 | 无 | 无 | 内置 hosts + 元素隐藏 |
+给 AI Agent 联网看网页，常见的方案各有短板：
 
-说直白点：SearXNG 和搜索 API 解决的是「搜」的问题，拿到的是搜索引擎结果页。PageKit 解决的是「看」的问题——用真机 WebView 把网页完整打开，JS 渲染、登录态、动态加载都跑完，再把干净内容提取出来给 agent。对反爬严的站点，手机环境比服务器 IP 靠谱得多。
+| | SearXNG | 收费搜索 API (Tavily/Serper…) | 服务器跑 headless 浏览器 | **PageKit** |
+|---|---|---|---|---|
+| 搜索 | ✓ | ✓ | ✗ | ✓ |
+| 抓取网页内容 | 结果页链接 | 部分支持 | ✓ | ✓ |
+| JS 动态渲染 | ✗ | 部分支持 | ✓ | ✓ |
+| 浏览器操作 | ✗ | ✗ | ✓ | ✓ |
+| 反爬 survivability | 差（服务器 IP） | 看厂商 | 差（服务器 IP） | 好（手机环境，和真人一致） |
+| 登录态/Cookie | ✗ | ✗ | 单一 | 多 profile 隔离 |
+| 广告过滤 | ✗ | ✗ | 需自己配 | 内置 |
+| 持续成本 | 要服务器 | 按次付费 | 要服务器 | 一台旧手机/平板 |
 
-两者不冲突，可以组合用：SearXNG 搜索拿 URL 列表，PageKit 负责把每个 URL 的内容抓干净。
+一句话：搜、抓、操作 PageKit 全都能做，代价只是一台吃灰的旧设备。真机 WebView 环境，JS 渲染、动态加载、反爬都不是问题；多 profile 隔离，不同会话各自独立 Cookie，登录态也能保持。不收钱，不限次，不依赖外部服务。
+
+### 反爬与实时性实测
+
+在一台普通 Android 设备（rk3588 板子）上实测：
+
+| 站点 | 检测类型 | 结果 |
+|------|----------|------|
+| bot.sannysoft.com | 浏览器指纹检测 | ✓ 通过 — WebDriver missing，WebGL 显示真实 GPU，无 headless 特征 |
+| amazon.com | 重反爬电商 | ✓ 正常拿到商品页，无验证码 |
+| nowsecure.nl | Cloudflare 防护 | ✓ 拿到正文 |
+| time.is | 实时性 | ✓ 抓到的页面时间与本地实时一致，秒级新鲜 |
+| reddit.com | 需登录 | ✗ 网络安全拦截（预期内，需登录态） |
+| medium.com | CF 交互式挑战 | ✗ 卡在「Just a moment」 |
+
+两点结论：
+
+- **真机环境过反爬的能力是实打实的**：指纹检测页全绿（headless Chrome 会在这里挂掉 WebDriver 检测），Amazon、Cloudflare 被动防护都过了。强交互式挑战和需登录态的站点过不了——这不是短板，是所有无登录方案的边界，需要登录的站点可以走 profile 登录后再抓。
+- **每次调用都是实时渲染**：没有缓存层，WebView 当场打开页面、当场提取。抓 time.is 这类秒级变化的页面，返回的时间就是当下的时间。搜索同理，返回的是搜索引擎此刻的结果，不是定期快照——很多搜索 API 是天级甚至更旧的缓存。
+
+相比服务器端 headless 浏览器方案，优势不在绝对速度，而在**成功率和新鲜度**：真机指纹 + 无 headless 特征 + 实时渲染，不排队、不过缓存。
 
 ## 能做什么
 
@@ -80,16 +101,97 @@ cp .env.example .env
 
 ### 连接
 
-设备装好后，用 adb 转发端口：
+设备装好后，agent 通过下面两种方式之一访问：
+
+**局域网直连（推荐，设备和 agent 在同一网段）：**
+
+```bash
+# 设备 IP 在 App 首页能看到，例如 192.168.1.100
+http://192.168.1.100:3000/mcp
+```
+
+**adb 端口转发（设备在别处 / 不想暴露端口）：**
 
 ```bash
 adb forward tcp:3000 tcp:3000  # 使用端（webfetch/websearch/browser_*）
 adb forward tcp:3001 tcp:3001  # 管理端（profile/session/proxy/llm 管理）
+# 然后访问 http://localhost:3000/mcp
 ```
 
-agent 侧配置 MCP server URL 为 `http://localhost:3000/mcp`，Authorization header 带上 token 就行。
-
 `./build.sh run [serial] [url]` 可以一键构建→安装→启动→转发→打印连接信息。
+
+## 接入 AI Agent
+
+PageKit 提供两类接口，覆盖主流 agent 的接入方式：
+
+| 接口 | 地址 | 适用 |
+|------|------|------|
+| MCP (streamable HTTP) | `http://<设备>:3000/mcp` | Claude Code / Cursor / Windsurf 等一切支持 MCP 的客户端 |
+| HTTP API | `POST /v1/search`、`POST /v1/fetch` | 自研 agent、脚本、任何能发 HTTP 请求的程序 |
+
+认证统一走 `Authorization: Bearer <token>`，token 在 App 首页或 `./build.sh token` 查看。
+
+### Claude Code / Claude Desktop
+
+```bash
+claude mcp add --transport http pagekit http://<设备IP>:3000/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+或直接编辑配置文件（`~/.claude.json`）：
+
+```json
+{
+  "mcpServers": {
+    "pagekit": {
+      "type": "http",
+      "url": "http://192.168.1.100:3000/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+接上后 agent 就有 `webfetch` / `websearch` / `browser_*` 可用。
+
+### Cursor / Windsurf
+
+MCP 设置里添加（Cursor: Settings → MCP → Add Server；Windsurf: 插件设置 → MCP Servers）：
+
+```json
+{
+  "mcpServers": {
+    "pagekit": {
+      "serverUrl": "http://192.168.1.100:3000/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+### 任意支持 MCP 的客户端
+
+PageKit 的 MCP 端点是标准 streamable HTTP 实现，任何符合 MCP 规范的客户端（Cline、Zed、OpenCode、goose 等）填 URL + Bearer token 即可，无需特殊适配。
+
+### HTTP API（自研 agent / 脚本）
+
+不想走 MCP 的，直接调 HTTP：
+
+```bash
+# 搜索（Kimi SearchWeb 兼容格式）
+curl -X POST http://192.168.1.100:3000/v1/search \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"text_query": "android mcp server"}'
+
+# 抓取网页（返回提取后的 markdown 正文）
+curl -X POST http://192.168.1.100:3000/v1/fetch \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+```
+
+`/v1/search` 是 Kimi 原生 SearchWeb 的兼容端点——Kimi 用户把 SearchWeb provider 的地址指过来就能用。两个接口都支持可选 header `X-PageKit-Session` / `X-PageKit-Profile`，不传则自动分配会话并在设备 UI 上实时显示渲染过程。
 
 ## MCP 工具
 
