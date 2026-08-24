@@ -26,6 +26,9 @@ class ExtractionResultCache(private val capacity: Int = 16) {
     }
 
     fun put(request: FetchRequest, result: RuntimePageResult) {
+        // 空结果不缓存：首次加载偶发失败（超时/空白页/提取为空）时，
+        // 缓存空结果会让同 URL 一直秒回空，直到交互或重启才恢复。
+        if (result.markdown.isBlank()) return
         synchronized(lock) {
             store[key(request)] = result
         }
