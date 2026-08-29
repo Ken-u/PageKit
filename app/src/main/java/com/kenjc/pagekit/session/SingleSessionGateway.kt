@@ -2,7 +2,9 @@ package com.kenjc.pagekit.session
 
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import kotlinx.serialization.json.Json
@@ -110,5 +112,21 @@ class SingleSessionGateway(
     override suspend fun closeIdleSessions(profileId: String?, idleMs: Long): Int {
         // 单 Session gateway 只有 default UI session，永不回收。
         return 0
+    }
+
+    override suspend fun fileDownload(sessionId: String, url: String, fileName: String): FileDownloadResult {
+        requireDefault(sessionId); return api.fileDownload(url, fileName)
+    }
+
+    override suspend fun fileDownloadPending(sessionId: String): FileDownloadResult? {
+        requireDefault(sessionId); return api.fileDownloadPending()
+    }
+
+    override suspend fun fileList(sessionId: String): List<FileInfo> {
+        requireDefault(sessionId); return api.fileList()
+    }
+
+    override suspend fun fileDelete(sessionId: String, fileName: String): Boolean {
+        requireDefault(sessionId); return api.fileDelete(fileName)
     }
 }

@@ -3,7 +3,9 @@ package com.kenjc.pagekit.session
 import android.content.Context
 import android.webkit.WebView
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.profile.ProfileSlotStore
 import com.kenjc.pagekit.profile.ProfileWorkerClient
@@ -23,7 +25,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-
 /** 主进程路由：slot 0 为本地 UI/Profile，slot 1..3 为独立 WebView Profile 进程。 */
 class MultiProfileSessionGateway(
     context: Context,
@@ -228,6 +229,35 @@ class MultiProfileSessionGateway(
         clients.values.forEach { it.close() }
         localSessions.closeAll()
     }
+
+    override suspend fun fileDownload(sessionId: String, url: String, fileName: String): FileDownloadResult =
+        routed(sessionId, ProfileWorkerOperations.FILE_DOWNLOAD, buildJsonObject {
+            put("url", url)
+            if (fileName.isNotBlank()) put("file_name", fileName)
+        }, local = { api -> api.fileDownload(url, fileName) }) { result ->
+            json.decodeFromJsonElement(result.getValue("result"))
+        }
+
+    override suspend fun fileDownloadPending(sessionId: String): FileDownloadResult? =
+        routed(sessionId, ProfileWorkerOperations.FILE_DOWNLOAD_PENDING, local = { api ->
+            api.fileDownloadPending()
+        }) { result ->
+            (result.getValue("result") as? JsonObject)?.let { json.decodeFromJsonElement<FileDownloadResult>(it) }
+        }
+
+    override suspend fun fileList(sessionId: String): List<FileInfo> =
+        routed(sessionId, ProfileWorkerOperations.FILE_LIST, local = { api ->
+            api.fileList()
+        }) { result ->
+            json.decodeFromJsonElement(result.getValue("files"))
+        }
+
+    override suspend fun fileDelete(sessionId: String, fileName: String): Boolean =
+        routed(sessionId, ProfileWorkerOperations.FILE_DELETE, buildJsonObject {
+            put("file_name", fileName)
+        }, local = { api -> api.fileDelete(fileName) }) { result ->
+            result.getValue("deleted").jsonPrimitive.content.toBooleanStrict()
+        }
 
     private suspend fun booleanOperation(
         sessionId: String,

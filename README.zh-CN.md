@@ -161,12 +161,22 @@ http://192.168.1.100:3000/mcp
 **adb 端口转发（设备在别处 / 不想暴露端口）：**
 
 ```bash
-adb forward tcp:3000 tcp:3000  # 使用端（webfetch/websearch/browser_*）
+adb forward tcp:3000 tcp:3000  # 使用端（webfetch/websearch/browser_*/files 文件回传）
 adb forward tcp:3001 tcp:3001  # 管理端（profile/session/proxy/llm 管理）
 # 然后访问 http://localhost:3000/mcp
 ```
 
 `./build.sh run [serial] [url]` 可以一键构建→安装→启动→转发→打印连接信息。
+
+### 取回下载的文件
+
+`file_download` 把文件落在设备上后，结果里带 `download_url`（如 `/files/p0_default_s0_xxx/report.xlsx`），
+用与 MCP 相同的 Bearer token 即可取回文件本体：
+
+```bash
+curl -H "Authorization: Bearer $PAGEKIT_TOKEN" \
+  -o report.xlsx "http://localhost:3000/files/p0_default_s0_xxx/report.xlsx"
+```
 
 ## 接入 AI Agent
 
@@ -260,6 +270,9 @@ PageKit 暴露两组 MCP 工具，分别跑在 3000 和 3001 端口：
 | `browser_select` | 下拉选择 |
 | `browser_back` | 后退 |
 | `browser_url` | 获取当前 URL |
+| `file_download` | 下载文件到设备（复用 session Cookie，支持登录态导出；单文件上限 100 MiB）。不传 `url` 时执行最近一次浏览器操作触发的下载。结果含 `download_url`，可通过 `GET /files/...` 取回文件本体 |
+| `file_list` | 列举 session 下载目录中的文件（含 `download_url`） |
+| `file_delete` | 删除下载目录中的指定文件 |
 
 **管理端（3001）— 管理 agent 用的：**
 

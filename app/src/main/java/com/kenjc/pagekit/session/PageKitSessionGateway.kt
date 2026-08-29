@@ -1,7 +1,9 @@
 package com.kenjc.pagekit.session
 
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.RuntimePageResult
 import kotlinx.serialization.Serializable
@@ -68,4 +70,16 @@ interface PageKitSessionGateway {
 
     /** 关闭 profile（或指定 session）中所有空闲超过 [idleMs] 的非默认 session；返回关闭数量。 */
     suspend fun closeIdleSessions(profileId: String? = null, idleMs: Long): Int
+
+    /** 显式 URL 下载文件到 session 的下载目录（复用该 session 的 WebView Cookie/登录态）。 */
+    suspend fun fileDownload(sessionId: String, url: String, fileName: String = ""): FileDownloadResult
+
+    /** 执行最近一条浏览器触发的 pending 下载；无 pending 时返回 null。 */
+    suspend fun fileDownloadPending(sessionId: String): FileDownloadResult?
+
+    /** 列举 session 下载目录中的文件。 */
+    suspend fun fileList(sessionId: String): List<FileInfo>
+
+    /** 删除 session 下载目录中的指定文件。 */
+    suspend fun fileDelete(sessionId: String, fileName: String): Boolean
 }

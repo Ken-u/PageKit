@@ -3,6 +3,8 @@ package com.kenjc.pagekit.session
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.CompressedPage
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileDownloadResult
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
@@ -158,6 +160,12 @@ class BrowserSessionRegistryTest {
         override suspend fun currentUrl() = url
         override suspend fun navigate(url: String): Pair<Boolean, String> = true to url
         override suspend fun goBack(): Pair<Boolean, String> = false to url
+
+        override suspend fun downloadFile(url: String, suggestedFileName: String) =
+            throw UnsupportedOperationException("not used in this test")
+        override suspend fun downloadPendingFile(): FileDownloadResult? = null
+        override suspend fun listDownloadedFiles(): List<FileInfo> = emptyList()
+        override suspend fun deleteDownloadedFile(fileName: String): Boolean = false
 
         private suspend fun <T> guarded(block: () -> T): T {
             val active = concurrent.incrementAndGet()

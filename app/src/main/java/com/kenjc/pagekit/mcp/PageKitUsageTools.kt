@@ -1,6 +1,7 @@
 package com.kenjc.pagekit.mcp
 
 import com.kenjc.pagekit.api.dto.FetchRequest
+import com.kenjc.pagekit.download.DownloadFileStore
 import com.kenjc.pagekit.provider.SessionWebSearchProvider
 import com.kenjc.pagekit.provider.WebSearchRequest
 import com.kenjc.pagekit.session.DEFAULT_SESSION_ID
@@ -9,11 +10,13 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.net.URI
 
@@ -266,6 +269,74 @@ class PageKitUsageTools(
                 }
             }
         }
+        addTool(
+            name = "file_download",
+            description = (
+                "Download a file over HTTP(S) to the device (max 100 MiB) with the session's cookies, " +
+                    "so logged-in exports work. Omit url to fetch the most recent download triggered " +
+                    "by browser actions (e.g. a click on an export button). Returns file metadata; " +
+                    "use file_list to confirm and file_delete to clean up."
+                ),
+            inputSchema = h.schema(
+                "url" to h.stringProperty("HTTP(S) URL of the file; omit to use the latest pending browser-triggered download"),
+                "file_name" to h.stringProperty("Optional target file name (path segments are rejected)"),
+                "session_id" to h.sessionProperty(),
+            ),
+        ) { request ->
+            val args = request.arguments
+            h.toolResult {
+                val sessionId = h.str(args, "session_id") ?: DEFAULT_SESSION_ID
+                val url = h.str(args, "url")
+                if (url != null) {
+                    validateRemoteUrl(url)
+                    val download: JsonObject = h.json.encodeToJsonElement(
+                        gateway.fileDownload(sessionId, url, h.str(args, "file_name").orEmpty()),
+                    ).jsonObject
+                    download.withDownloadUrl()
+                } else {
+                    val result = gateway.fileDownloadPending(sessionId)
+                        ?: error("no pending download; trigger one via browser_click or pass url explicitly")
+                    val pending: JsonObject = h.json.encodeToJsonElement(result).jsonObject
+                    pending.withDownloadUrl()
+                }
+            }
+        }
+
+        addTool(
+            name = "file_list",
+            description = "List files downloaded in the session's download directory (name, path, size, mtime, download_url).",
+            inputSchema = h.schema("session_id" to h.sessionProperty()),
+        ) { request ->
+            val args = request.arguments
+            h.toolResult {
+                val files = gateway.fileList(h.str(args, "session_id") ?: DEFAULT_SESSION_ID)
+                buildJsonObject {
+                    put("files", buildJsonArray {
+                        files.forEach { add(h.json.encodeToJsonElement(it).jsonObject.withDownloadUrl()) }
+                    })
+                }
+            }
+        }
+
+        addTool(
+            name = "file_delete",
+            description = "Delete one downloaded file from the session's download directory by file name.",
+            inputSchema = h.schema(
+                "file_name" to h.stringProperty("File name as returned by file_download/file_list"),
+                "session_id" to h.sessionProperty(),
+                required = listOf("file_name"),
+            ),
+        ) { request ->
+            val args = request.arguments
+            h.toolResult {
+                val deleted = gateway.fileDelete(
+                    sessionId = h.str(args, "session_id") ?: DEFAULT_SESSION_ID,
+                    fileName = h.requiredStr(args, "file_name"),
+                )
+                require(deleted) { "file not found: ${h.requiredStr(args, "file_name")}" }
+                buildJsonObject { put("deleted", true) }
+            }
+        }
     }
 
     private fun validateRemoteUrl(value: String) {
@@ -292,5 +363,16 @@ class PageKitUsageTools(
     private fun validateMode(mode: String, intent: String?) {
         require(mode in setOf("raw", "compact", "focus")) { "unsupported mode: $mode" }
         if (mode == "focus") require(!intent.isNullOrBlank()) { "focus mode requires intent" }
+    }
+
+    /**
+     * 给 file_download/file_list 结果补 download_url（绝对路径形式 /files/<ns>/<file>）。
+     * 调用方按部署形态自行拼 base（LAN 直连 http://<设备IP>:3000 或 adb forward 后的
+     * http://127.0.0.1:19300），Bearer token 与 MCP 相同。
+     */
+    private fun JsonObject.withDownloadUrl(): JsonObject {
+        val path = this["path"]?.jsonPrimitive?.content ?: return this
+        val relative = DownloadFileStore.downloadUrl(path) ?: return this
+        return JsonObject(this + ("download_url" to JsonPrimitive(relative)))
     }
 }

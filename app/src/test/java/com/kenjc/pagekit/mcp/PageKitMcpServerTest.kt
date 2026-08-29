@@ -2,8 +2,10 @@ package com.kenjc.pagekit.mcp
 
 import com.kenjc.pagekit.api.DefaultPageKitApi
 import com.kenjc.pagekit.api.dto.CompressedPage
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.compress.LlmConfig
 import com.kenjc.pagekit.compress.LlmSettings
 import com.kenjc.pagekit.engine.SearchHit
@@ -45,6 +47,7 @@ class PageKitMcpServerTest {
                 "webfetch", "websearch", "expand",
                 "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
                 "browser_select", "browser_navigate", "browser_back", "browser_url",
+                "file_download", "file_list", "file_delete",
             ),
             names,
         )
@@ -187,6 +190,12 @@ class PageKitMcpServerTest {
         override suspend fun select(elementId: String, value: String): String = ok()
         override suspend fun navigate(url: String): Pair<Boolean, String> = true to url
         override suspend fun goBack(): Pair<Boolean, String> = false to (lastRequest?.url.orEmpty())
+
+        override suspend fun downloadFile(url: String, suggestedFileName: String) =
+            throw UnsupportedOperationException("not used in this test")
+        override suspend fun downloadPendingFile(): FileDownloadResult? = null
+        override suspend fun listDownloadedFiles(): List<FileInfo> = emptyList()
+        override suspend fun deleteDownloadedFile(fileName: String): Boolean = false
 
         private fun ok() = """{"ok":true}"""
     }

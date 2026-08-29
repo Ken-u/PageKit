@@ -40,4 +40,8 @@ object ProfileWorkerOperations {
     const val NAVIGATE = "navigate"
     const val GO_BACK = "go_back"
     const val CURRENT_URL = "current_url"
+    const val FILE_DOWNLOAD = "file_download"
+    const val FILE_DOWNLOAD_PENDING = "file_download_pending"
+    const val FILE_LIST = "file_list"
+    const val FILE_DELETE = "file_delete"
 }

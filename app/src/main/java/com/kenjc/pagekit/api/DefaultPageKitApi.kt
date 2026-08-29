@@ -1,8 +1,10 @@
 package com.kenjc.pagekit.api
 
 import com.kenjc.pagekit.api.dto.CompressedPage
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.engine.SearchEngine
 import com.kenjc.pagekit.engine.SearchHit
 import com.kenjc.pagekit.runtime.PageKitRuntime
@@ -94,6 +96,18 @@ class DefaultPageKitApi(
     suspend fun currentUrl(): String = sessionMutex.withLock { runtime.currentUrl() }
     suspend fun navigate(url: String): Pair<Boolean, String> = sessionMutex.withLock { runtime.navigate(url) }
     suspend fun goBack(): Pair<Boolean, String> = sessionMutex.withLock { runtime.goBack() }
+
+    suspend fun fileDownload(url: String, suggestedFileName: String = ""): FileDownloadResult =
+        sessionMutex.withLock { runtime.downloadFile(url, suggestedFileName) }
+
+    suspend fun fileDownloadPending(): FileDownloadResult? =
+        sessionMutex.withLock { runtime.downloadPendingFile() }
+
+    suspend fun fileList(): List<FileInfo> =
+        sessionMutex.withLock { runtime.listDownloadedFiles() }
+
+    suspend fun fileDelete(fileName: String): Boolean =
+        sessionMutex.withLock { runtime.deleteDownloadedFile(fileName) }
 
     private fun operationOk(result: String): Boolean = runCatching {
         Json.parseToJsonElement(result).jsonObject["ok"]?.jsonPrimitive?.content == "true"

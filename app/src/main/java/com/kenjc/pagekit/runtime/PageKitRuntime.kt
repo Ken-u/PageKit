@@ -2,13 +2,16 @@ package com.kenjc.pagekit.runtime
 
 import android.content.Context
 import com.kenjc.pagekit.api.dto.CompressedPage
+import com.kenjc.pagekit.api.dto.FileDownloadResult
 import com.kenjc.pagekit.api.dto.FetchRequest
 import com.kenjc.pagekit.api.dto.ExpandedSection
+import com.kenjc.pagekit.api.dto.FileInfo
 import com.kenjc.pagekit.compress.Compressor
 import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.NoopCompressor
 import com.kenjc.pagekit.compress.PageExpansionCache
 import com.kenjc.pagekit.compress.PageContext
+import com.kenjc.pagekit.download.FileDownloader
 import com.kenjc.pagekit.net.ProxyConfig
 import com.kenjc.pagekit.net.SharedPreferencesProxySettings
 import com.kenjc.pagekit.engine.BrowserController
@@ -26,6 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+import java.io.File
 
 /** goBack 等纯历史导航的等待上限；导航型操作走 WebPageLoader 自身的 60s 上限。 */
 private const val NAV_BACK_TIMEOUT_MS = 15_000L
@@ -66,6 +70,18 @@ interface PageKitRuntime {
 
     /** 历史后退一页并等待终态；无历史时返回 (false, 当前 URL)。 */
     suspend fun goBack(): Pair<Boolean, String>
+
+    /** 显式 URL 下载文件（复用 WebView Cookie 与代理配置），落盘后返回元数据。 */
+    suspend fun downloadFile(url: String, suggestedFileName: String = ""): FileDownloadResult
+
+    /** 取最近一条浏览器触发的 pending 下载并执行；队列为空返回 null。 */
+    suspend fun downloadPendingFile(): FileDownloadResult?
+
+    /** 列举本会话下载目录中的文件。 */
+    suspend fun listDownloadedFiles(): List<FileInfo>
+
+    /** 删除本会话下载目录中的指定文件；返回是否删除。 */
+    suspend fun deleteDownloadedFile(fileName: String): Boolean
 }
 
 /** WebView 驱动的 Android 运行时。 */
@@ -74,10 +90,17 @@ class AndroidPageKitRuntime(
     private val adBlocker: AdBlocker = NoopAdBlocker,
     private val compressor: Compressor = NoopCompressor(),
     private val pageCache: PageExpansionCache = FilePageExpansionCache(context),
+    /** 下载目录命名空间（如 p1_<profile>_<session>）；与页面缓存同构隔离。 */
+    private val downloadNamespace: String = "default",
 ) : PageKitRuntime {
 
     private val appContext = context.applicationContext
     val loader = WebPageLoader(context, adBlocker)
+    private val fileDownloader = FileDownloader(appContext)
+
+    /** 本 session 的下载目录（相对 filesDir）；与页面缓存一样按 namespace 隔离。 */
+    private val downloadDir: File =
+        File(appContext.filesDir, "downloads/$downloadNamespace").apply { mkdirs() }
 
     private val extractor = ContentExtractor(context)
     private val assembler = StructuredAssembler()
@@ -219,6 +242,37 @@ class AndroidPageKitRuntime(
     }.also { resultCache.invalidateAll() }
 
     fun destroy() = loader.destroy()
+
+    override suspend fun downloadFile(url: String, suggestedFileName: String): FileDownloadResult {
+        require(url.startsWith("http", ignoreCase = true)) { "only http/https URLs can be downloaded" }
+        return fileDownloader.download(url, downloadDir, suggestedFileName)
+    }
+
+    override suspend fun downloadPendingFile(): FileDownloadResult? {
+        val pending = synchronized(loader.pendingDownloads) { loader.pendingDownloads.pollFirst() }
+            ?: return null
+        return fileDownloader.download(pending.url, downloadDir, pending.suggestedFileName)
+    }
+
+    override suspend fun listDownloadedFiles(): List<FileInfo> = withContext(Dispatchers.IO) {
+        downloadDir.listFiles { file -> file.isFile }
+            .orEmpty()
+            .sortedByDescending { it.lastModified() }
+            .map {
+                FileInfo(
+                    fileName = it.name,
+                    path = it.relativeTo(appContext.filesDir).path,
+                    sizeBytes = it.length(),
+                    lastModifiedEpochMs = it.lastModified(),
+                )
+            }
+    }
+
+    override suspend fun deleteDownloadedFile(fileName: String): Boolean = withContext(Dispatchers.IO) {
+        val safe = FileDownloader.sanitizeFileName(fileName)
+        require(safe == fileName) { "invalid file name: $fileName" }
+        File(downloadDir, safe).takeIf { it.isFile }?.delete() ?: false
+    }
 
     /**
      * 原生 HTTP 获取原始内容（回退方案）。

@@ -8,6 +8,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.DownloadListener
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -15,12 +16,15 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.kenjc.pagekit.api.dto.PendingDownload
+import com.kenjc.pagekit.download.pendingDownloadOf
 import com.kenjc.pagekit.engine.adblock.AdBlocker
 import com.kenjc.pagekit.engine.adblock.NoopAdBlocker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
+import java.util.ArrayDeque
 
 /** 页面加载状态 */
 sealed interface LoadState {
@@ -49,6 +53,7 @@ class WebPageLoader(
         private const val READINESS_MAX_RETRIES = 5  // 5×200ms=1s，超过后 onPageFinished 已触发即视为就绪
         private const val DEFAULT_VIEWPORT_WIDTH = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT = 1920
+        private const val MAX_PENDING_DOWNLOADS = 8
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -60,6 +65,12 @@ class WebPageLoader(
 
     val state = MutableStateFlow<LoadState>(LoadState.Idle)
     val canGoBack = MutableStateFlow(false)
+
+    /**
+     * 浏览器操作（click 等）触发的下载回调队列：DownloadListener 收到后入队，
+     * file_download 工具不传 URL 时取最新一条执行。上限 8 条，最旧的静默丢弃。
+     */
+    val pendingDownloads = ArrayDeque<PendingDownload>()
 
     /** Session 专属 WebView，主线程创建，随 Session 生命周期销毁。 */
     val webView: WebView = createWebView(context.applicationContext)
@@ -79,6 +90,12 @@ class WebPageLoader(
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             webViewClient = LoaderClient()
+            setDownloadListener(DownloadListener { url, _, contentDisposition, mimeType, contentLength ->
+                synchronized(pendingDownloads) {
+                    pendingDownloads.addLast(pendingDownloadOf(url, contentDisposition, mimeType, contentLength))
+                    while (pendingDownloads.size > MAX_PENDING_DOWNLOADS) pendingDownloads.removeFirst()
+                }
+            })
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
                     lastProgress = newProgress

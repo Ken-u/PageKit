@@ -36,6 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -206,6 +207,24 @@ open class ProfileWorkerService : Service() {
             ProfileWorkerOperations.CURRENT_URL -> sessions.withApi(request.requiredSessionId()) { api ->
                 buildJsonObject { put("value", api.currentUrl()) }
             }
+            ProfileWorkerOperations.FILE_DOWNLOAD -> sessions.withApi(request.requiredSessionId()) { api ->
+                val result = api.fileDownload(
+                    url = request.arguments.requiredString("url"),
+                    suggestedFileName = request.arguments.string("file_name") ?: "",
+                )
+                buildJsonObject { put("result", json.encodeToJsonElement(result)) }
+            }
+            ProfileWorkerOperations.FILE_DOWNLOAD_PENDING -> sessions.withApi(request.requiredSessionId()) { api ->
+                buildJsonObject {
+                    put("result", api.fileDownloadPending()?.let { json.encodeToJsonElement(it) } ?: JsonNull)
+                }
+            }
+            ProfileWorkerOperations.FILE_LIST -> sessions.withApi(request.requiredSessionId()) { api ->
+                buildJsonObject { put("files", json.encodeToJsonElement(api.fileList())) }
+            }
+            ProfileWorkerOperations.FILE_DELETE -> sessions.withApi(request.requiredSessionId()) { api ->
+                buildJsonObject { put("deleted", api.fileDelete(request.arguments.requiredString("file_name"))) }
+            }
             ProfileWorkerOperations.NAVIGATE -> sessions.withApi(request.requiredSessionId()) { api ->
                 val (ok, url) = api.navigate(request.arguments.requiredString("url"))
                 buildJsonObject { put("ok", ok); put("url", url) }
@@ -265,6 +284,7 @@ open class ProfileWorkerService : Service() {
                         context = this@ProfileWorkerService,
                         namespace = "p${slot}_${profileId}_${sessionId}",
                     ),
+                    downloadNamespace = "p${slot}_${profileId}_${sessionId}",
                 )
                 BrowserSessionComponents(
                     api = DefaultPageKitApi(runtime),
@@ -283,6 +303,9 @@ open class ProfileWorkerService : Service() {
             clearWebViewProfileData()
             filesDir.resolve("page-cache").listFiles()
                 ?.filter { it.name.startsWith("p${slot}_") }
+                ?.forEach { it.deleteRecursively() }
+            filesDir.resolve("downloads").listFiles()
+                ?.filter { it.isDirectory && it.name.startsWith("p${slot}_") }
                 ?.forEach { it.deleteRecursively() }
             applicationInfo.dataDir.let(::File).resolve("shared_prefs").listFiles()
                 ?.filter { it.name.startsWith("pagekit_page_cache_p${slot}_") }

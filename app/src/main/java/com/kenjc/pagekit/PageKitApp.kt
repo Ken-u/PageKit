@@ -19,6 +19,7 @@ import com.kenjc.pagekit.profile.ProfileSlotStore
 import com.kenjc.pagekit.compress.FilePageExpansionCache
 import com.kenjc.pagekit.compress.OpenAiCompatibleCompressor
 import com.kenjc.pagekit.compress.SharedPreferencesLlmSettings
+import com.kenjc.pagekit.download.DownloadFileStore
 import com.kenjc.pagekit.net.SharedPreferencesProxySettings
 import com.kenjc.pagekit.net.WebViewProxyApplier
 import com.kenjc.pagekit.runtime.AndroidPageKitRuntime
@@ -117,6 +118,7 @@ class PageKitApp : Application() {
                             context = this@PageKitApp,
                             namespace = "p0_default_$sessionId",
                         ),
+                        downloadNamespace = "p0_default_$sessionId",
                     )
                     BrowserSessionComponents(
                         api = DefaultPageKitApi(sessionRuntime),
@@ -136,6 +138,7 @@ class PageKitApp : Application() {
             ),
             sessionGateway = sessionGateway,
             accessPolicy = McpAccessPolicy { mcpTokenStore.token },
+            downloadFileStore = DownloadFileStore(this),
         )
     }
 

@@ -1,5 +1,6 @@
 package com.kenjc.pagekit.mcp
 
+import com.kenjc.pagekit.download.DownloadFileStore
 import com.kenjc.pagekit.provider.KimiWebSearchAdapter
 import com.kenjc.pagekit.provider.SessionWebSearchProvider
 import com.kenjc.pagekit.session.DEFAULT_PROFILE_ID
@@ -16,7 +17,10 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.header
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
+import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.modelcontextprotocol.kotlin.sdk.server.Server
@@ -37,6 +41,7 @@ import kotlinx.coroutines.launch
  * 使用两个独立的 Ktor engine（避免 SSE 插件重复安装）：
  * - port 3000 `/mcp`      — 使用端：webfetch / websearch / expand / browser_*（面向实际使用的 Agent）
  * - port 3000 `/v1/search` — Kimi 原生 SearchWeb 兼容端点
+ * - port 3000 `/files/<ns>/<file>` — 下载文件回传（file_download 落盘的文件，Bearer 鉴权）
  * - port 3001 `/mcp`      — 管理端：profile_* / session_* / llm_* / proxy_*（面向管理 Agent）
  *
  * 主机侧端口转发：
@@ -49,6 +54,7 @@ class PageKitMcpServerController(
     private val kimiWebSearchAdapter: KimiWebSearchAdapter,
     private val sessionGateway: PageKitSessionGateway,
     private val accessPolicy: McpAccessPolicy,
+    private val downloadFileStore: DownloadFileStore? = null,
     private val host: String = "0.0.0.0",
     private val usagePort: Int = 3000,
     private val managementPort: Int = 3001,
@@ -87,6 +93,25 @@ class PageKitMcpServerController(
                             enableDnsRebindingProtection = false,
                         ) { usageServer }
                         routing {
+                            // 下载文件回传：GET /files/<namespace>/<fileName>，同引擎 Bearer 鉴权。
+                            // 仅在传入 downloadFileStore 时启用（默认 null，测试/嵌入场景可关闭）。
+                            if (downloadFileStore != null) {
+                                get("/files/{namespace}/{fileName}") {
+                                    val file = downloadFileStore.resolve(
+                                        namespace = call.parameters["namespace"].orEmpty(),
+                                        fileName = call.parameters["fileName"].orEmpty(),
+                                    )
+                                    if (file == null) {
+                                        call.respondText("Not Found", status = HttpStatusCode.NotFound)
+                                    } else {
+                                        call.response.header(
+                                            "Content-Disposition",
+                                            "attachment; filename=\"${file.name}\"",
+                                        )
+                                        call.respondFile(file)
+                                    }
+                                }
+                            }
                             post("/v1/search") {
                                 handleWebSearch(
                                     call = call,

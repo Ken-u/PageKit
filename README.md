@@ -154,12 +154,23 @@ http://192.168.1.100:3000/mcp
 **adb port forwarding (device elsewhere / don't want to expose ports):**
 
 ```bash
-adb forward tcp:3000 tcp:3000  # usage endpoint (webfetch/websearch/browser_*)
+adb forward tcp:3000 tcp:3000  # usage endpoint (webfetch/websearch/browser_*/files)
 adb forward tcp:3001 tcp:3001  # admin endpoint (profile/session/proxy/llm management)
 # then use http://localhost:3000/mcp
 ```
 
 `./build.sh run [serial] [url]` chains build → install → launch → forward → print connection info.
+
+### Fetching downloaded files
+
+After `file_download` stores a file on the device, the result includes a `download_url`
+(e.g. `/files/p0_default_s0_xxx/report.xlsx`). Fetch the file body with the same Bearer
+token as MCP:
+
+```bash
+curl -H "Authorization: Bearer $PAGEKIT_TOKEN" \
+  -o report.xlsx "http://localhost:3000/files/p0_default_s0_xxx/report.xlsx"
+```
 
 ## Hook it up to your agent
 
@@ -253,6 +264,9 @@ Two groups of MCP tools, on ports 3000 and 3001:
 | `browser_select` | pick a dropdown option |
 | `browser_back` | go back |
 | `browser_url` | get the current URL |
+| `file_download` | Download a file over HTTP(S) with the session's cookies (logged-in exports work; 100 MiB per-file limit). Omit `url` to execute the most recent browser-triggered download. The result includes `download_url` to fetch the file via `GET /files/...` |
+| `file_list` | List files in the session's download directory (with `download_url`) |
+| `file_delete` | Delete one downloaded file |
 
 **Admin (3001) — for management agents:**
 
