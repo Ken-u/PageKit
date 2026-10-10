@@ -17,7 +17,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -226,7 +225,17 @@ fun HomeScreen(
                             }
                         }
                         if (loadState is LoadState.Loading) {
-                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                            // 不叠加旋转指示器：Compose 的无限动画会每帧重绘整个窗口（含 WebView），
+                            // 在页面长时间停在 Loading 时实测把整机 CPU 打到 170%+（约 1.7 核）。
+                            // 加载进度由上方状态栏文本（「加载中… <url>」）承载，静态绘制不产生逐帧重绘。
+                            Text(
+                                "加载中…",
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 8.dp),
+                                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         ElementsPanel(vm)
                     }
@@ -397,7 +406,12 @@ private fun ResultPane(
 
     when {
         state.running -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+            // 同上：静止文本代替无限旋转动画，避免提取期间逐帧重绘整个窗口。
+            Text(
+                "提取中…",
+                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         !state.ok -> Placeholder(emptyHint)
