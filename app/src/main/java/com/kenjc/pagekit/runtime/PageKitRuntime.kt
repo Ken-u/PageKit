@@ -34,6 +34,9 @@ import java.io.File
 /** goBack 等纯历史导航的等待上限；导航型操作走 WebPageLoader 自身的 60s 上限。 */
 private const val NAV_BACK_TIMEOUT_MS = 15_000L
 
+/** fetch/search 等待导航终态的上限；比 WebPageLoader 自身的定时器多留 10s 余量。 */
+private const val LOAD_TIMEOUT_MS = 70_000L
+
 /** 一次完整提取的内部结果；UI 与 MCP 复用同一份页面产物。 */
 @Serializable
 data class RuntimePageResult(
@@ -199,10 +202,17 @@ class AndroidPageKitRuntime(
 
     private suspend fun loadAndAwait(url: String) = withContext(Dispatchers.Main.immediate) {
         loader.loadUrl(url)
-        when (val terminal = loader.state.first { it is LoadState.Ready || it is LoadState.Failed }) {
+        // 始终以导航结束为界重新评估终态：WebView 在 loadUrl 前后触发的事件（onPageFinished 等）
+        // 可能与本次导航交错，逐一比较 reference 避免把"上一次导航的 Ready"当成本次结果而提前返回。
+        val previous = loader.state.value
+        val terminal = withTimeoutOrNull(LOAD_TIMEOUT_MS) {
+            loader.state.first { it !is LoadState.Loading && it !== previous }
+        } ?: loader.state.value
+        when (terminal) {
             is LoadState.Ready -> Unit
             is LoadState.Failed -> error("${terminal.message}: ${terminal.url}")
-            else -> error("unexpected load state: $terminal")
+            // 超时仍停在 Loading：必须失败返回，旧实现会永久挂起并一直持有 session 操作锁。
+            else -> error("加载超时（${LOAD_TIMEOUT_MS / 1000}s）: $url")
         }
     }
 

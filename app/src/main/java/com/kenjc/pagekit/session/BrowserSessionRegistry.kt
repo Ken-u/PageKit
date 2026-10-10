@@ -113,16 +113,19 @@ class BrowserSessionRegistry(
     }
 
     suspend fun list(): List<SessionInfo> {
-        val ids = registryMutex.withLock { entries.keys.toList() }
+        // 先在注册表锁内快照，再在锁外尝试取操作锁：保持「注册表锁 → 操作锁」的加锁顺序。
+        // 旧实现反过来（先注册表锁拿到 Entry、放锁后再 lock 操作锁），但会在持锁期间被
+        // closeIdle/close/shrinkToLimit 抢占并释放该 Mutex，随后 mutex.unlock() 抛
+        // IllegalStateException，而 closeIdle 又握着操作锁等注册表锁 → AB-BA 互相卡死。
+        // 拿不到操作锁说明该 session 正忙，本次跳过（与 closeIdle 一致，不做阻塞等待）。
+        val snapshot = registryMutex.withLock { entries.entries.map { it.key to it.value } }
         return buildList {
-            for (id in ids) {
-                val entry = registryMutex.withLock {
-                    val found = entries[id] ?: return@withLock null
-                    found.operationMutex.lock()
-                    found
-                } ?: continue
+            for ((id, entry) in snapshot) {
+                if (!entry.operationMutex.tryLock()) continue
                 try {
-                    add(entry.info(id, entry.components.api.currentUrl()))
+                    if (registryMutex.withLock { entries[id] === entry }) {
+                        add(entry.info(id, entry.components.api.currentUrl()))
+                    }
                 } finally {
                     entry.operationMutex.unlock()
                 }

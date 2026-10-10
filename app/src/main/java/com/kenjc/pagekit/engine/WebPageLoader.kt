@@ -239,7 +239,14 @@ class WebPageLoader(
             else -> "https://$t"
         }
         // 同步切换到 Loading，令 suspend API 可以无竞态地等待本次导航的终态。
-        state.value = LoadState.Loading(url)
+        // 同一 URL 重复加载时不重建状态对象（UI 直接点两次「加载」的场景），
+        // 但仍要为本次导航重挂超时定时器，否则上一次的定时器会在中途把状态打成 Failed。
+        val current = state.value
+        if (current !is LoadState.Loading || current.url != url) {
+            state.value = LoadState.Loading(url)
+        } else {
+            scheduleTimeout()
+        }
         webView.loadUrl(url)
     }
 

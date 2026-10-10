@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -134,11 +136,70 @@ class BrowserSessionRegistryTest {
         assertFalse(destroyed.getValue("s0_0000000000000002").get())
     }
 
+    @Test
+    fun `list 与 closeIdle 并发时不会抛异常或卡死`() = runBlocking {
+        val registry = BrowserSessionRegistry(
+            profileId = "test",
+            processSlot = 0,
+            initialMaxSessions = 8,
+            factory = BrowserSessionFactory {
+                BrowserSessionComponents(
+                    api = DefaultPageKitApi(FakeRuntime(AtomicInteger(), AtomicInteger())),
+                    destroy = {},
+                )
+            },
+        )
+        repeat(4) { registry.create("s0_" + "%016x".format(it + 1)) }
+
+        // 旧实现在持注册表锁期间放锁再 lock 操作锁，会被 closeIdle 抢走操作锁后抛
+        // IllegalStateException；两者又互相等锁 → list() 要么异常要么永久挂起。
+        val churn = launch {
+            repeat(300) { i ->
+                runCatching { registry.closeIdle(0) }
+                runCatching { registry.create("s0_" + "%016x".format(i + 100), evictIdleMs = 0) }
+            }
+        }
+        withTimeout(15_000) { repeat(80) { registry.list() } }
+        churn.cancel()
+    }
+
+    @Test
+    fun `list 跳过正在执行操作的 session 而不阻塞`() = runBlocking {
+        val runtimes = mutableMapOf<String, FakeRuntime>()
+        val registry = BrowserSessionRegistry(
+            profileId = "test",
+            processSlot = 0,
+            initialMaxSessions = 3,
+            factory = BrowserSessionFactory { id ->
+                FakeRuntime(AtomicInteger(), AtomicInteger(), fetchDelayMs = 3_000)
+                    .also { runtimes[id] = it }
+                    .let { BrowserSessionComponents(api = DefaultPageKitApi(it), destroy = {}) }
+            },
+        )
+        val busyId = registry.create("s0_0000000000000001").sessionId
+        val freeId = registry.create("s0_0000000000000002").sessionId
+        val busy = async {
+            registry.withApi(busyId) { it.fetch(FetchRequest("https://slow.example")) }
+        }
+        // 等 busy 协程真正拿到操作锁
+        while (runtimes.getValue(busyId).started.get() == 0) delay(5)
+
+        val startedAt = System.currentTimeMillis()
+        val listed = withTimeout(2_000) { registry.list() }
+        val elapsed = System.currentTimeMillis() - startedAt
+
+        assertTrue("list() 不应等待忙 session，实测 ${elapsed}ms", elapsed < 1_500)
+        assertEquals(listOf(freeId), listed.map { it.sessionId })
+        busy.cancel()
+    }
+
     private class FakeRuntime(
         private val concurrent: AtomicInteger,
         private val maxConcurrent: AtomicInteger,
+        private val fetchDelayMs: Long = 40,
     ) : PageKitRuntime {
         @Volatile var url: String = ""
+        val started = AtomicInteger()
 
         override suspend fun fetch(request: FetchRequest): RuntimePageResult = guarded {
             url = request.url
@@ -170,8 +231,9 @@ class BrowserSessionRegistryTest {
         private suspend fun <T> guarded(block: () -> T): T {
             val active = concurrent.incrementAndGet()
             maxConcurrent.updateAndGet { maxOf(it, active) }
+            started.incrementAndGet()
             return try {
-                delay(40)
+                delay(fetchDelayMs)
                 block()
             } finally {
                 concurrent.decrementAndGet()
